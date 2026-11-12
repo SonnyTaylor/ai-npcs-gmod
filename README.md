@@ -4,6 +4,16 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 
 ![](https://img.shields.io/steam/subscriptions/3142705974?label=Steam%20Subscriptions&style=for-the-badge&logo=steam)
 
+## What's new in v2.1
+
+- **Voices actually work now.** The old default TTS provider (StreamElements) started returning `401`, so every NPC was silent. Voice playback is now built on engines that answer today, with 16 voices across 13 languages.
+- **Voice comes out of the NPC** and follows them as they walk, with fade distance and a volume convar. Long lines are split into chunks and played back to back instead of being cut off mid-sentence.
+- **A voice per NPC** — Barney gets a gruff English voice, the scientist gets another one. Optional cloned voices via a local relay (see `lua/voices/README.md`).
+- **Subtitle bubble** above the NPC while it speaks.
+- **The Spawn button can't be scrolled away any more** — it lives in a fixed footer next to a status line that tells you exactly what will be sent (provider • model • voice), red when your key is missing.
+- **Model filter box**, because provider model lists are long.
+- Fixed: replies went to the NPC's owner instead of whoever asked; `/say` ignored the chat cooldown; a hung request left the NPC stuck on "thinking…" forever; OpenRouter's live free-model list never applied (the JSON exceeded GMod's default parse limit) and every hardcoded fallback model had been delisted.
+
 ## What's new in v2.0
 
 - Free tier actually works — no more dead hardcoded API key. First launch walks you through getting a free key from Groq or OpenRouter in about 30 seconds.
@@ -48,6 +58,18 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 8. Click **Spawn NPC**.
 9. Walk up to the NPC and press **E**, or just type in regular chat when you're within ~250 units. You can also use `/say <message>` from anywhere.
 
+## Voices
+
+Pick a voice per NPC in the spawn panel. Voices are broadcast from the server, so every player hears the same NPC the same way, and nobody needs a key to listen.
+
+| Engine | What you get |
+|---|---|
+| `google:<lang>` | Keyless, 13 languages (en, de, ru, fr, es, it, pt, pl, nl, sv, da, tr, ja) |
+| `sapi4:<voice>` | Retro Microsoft Sam / Mike / Mary |
+| `relay:<name>` | Cloned voices from a local voice relay — see [`lua/voices/README.md`](lua/voices/README.md) |
+
+`ainpc_voice_volume` (client) controls playback volume. "Test voice" in the panel previews the selected voice.
+
 ## Server admin convars
 
 All of these are `FCVAR_ARCHIVE` so they persist across restarts.
@@ -64,6 +86,8 @@ All of these are `FCVAR_ARCHIVE` so they persist across restarts.
 | `ainpc_interact_range` | 140 | Distance for press-E-to-talk |
 | `ainpc_tts_allowed` | 1 | Allow clients to enable TTS |
 | `ainpc_openrouter_autorefresh` | 1 | Auto-fetch OpenRouter free models daily |
+| `ainpc_voice_relay` | `` (empty) | Base URL of the optional voice relay serving cloned voices, e.g. `http://127.0.0.1:7171` |
+| `ainpc_voice_volume` | 1 | Client-side voice volume (0–1) |
 
 ## Manual installation
 

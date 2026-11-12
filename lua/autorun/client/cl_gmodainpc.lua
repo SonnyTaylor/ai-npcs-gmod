@@ -5,6 +5,7 @@
 ]]
 
 local providers = include("providers/providers.lua")
+local Voices    = include("voices/voices.lua")
 
 -- =============================================================================
 -- Persisted settings (stored client-side so the user doesn't re-enter keys).
@@ -19,8 +20,8 @@ local defaultSettings = {
     personality = "",
     npcClass    = "npc_citizen",
     model       = "",
-    enableTTS   = false,
-    ttsVoice    = "streamelements",
+    enableTTS   = true,
+    ttsVoice    = "google:en",
     max_tokens  = 2048,
     temperature = 1,
     reasoning   = nil,
@@ -33,12 +34,19 @@ local function loadSettings()
         return table.Copy(defaultSettings)
     end
     local raw = file.Read(SETTINGS_FILE, "DATA") or ""
-    local parsed = util.JSONToTable(raw)
+    local parsed = util.JSONToTable(raw, true)
     if not istable(parsed) then return table.Copy(defaultSettings) end
     for k, v in pairs(defaultSettings) do
         if parsed[k] == nil then parsed[k] = v end
     end
     if not istable(parsed.apiKeys) then parsed.apiKeys = {} end
+
+    -- Migrate voice ids from older builds (e.g. "streamelements", "sapi4") that are
+    -- no longer in the registry, so an old settings file doesn't silence the NPCs.
+    if parsed.enableTTS and not Voices.Get(parsed.ttsVoice) then
+        parsed.ttsVoice = Voices.Default
+    end
+
     return parsed
 end
 
@@ -72,7 +80,7 @@ net.Receive("AINPC_OpenRouterModels", function()
     local payload = table.concat(OpenRouterBuffer.chunks)
     OpenRouterBuffer = { chunks = {}, expect = 0 }
 
-    local parsed = util.JSONToTable(payload or "")
+    local parsed = util.JSONToTable(payload or "", true)
     if istable(parsed) and istable(parsed.order) and istable(parsed.models) then
         LiveOpenRouterModels = parsed
         AINPCS.DebugPrint("[AI-NPCs] received " .. #parsed.order .. " live OpenRouter models")
@@ -246,6 +254,30 @@ function AINPCS.OpenConfigPanel()
     frame:SetIcon("materials/gptlogo/ChatGPT_logo.svg.png")
     AINPCS.Panel = frame
 
+    -- ---- Footer ----
+    -- Dock this BEFORE the content panel: GMod docks in creation order, so a FILL
+    -- sibling created first would eat the whole frame and bury the spawn button in a
+    -- scroll area (the "there is no Spawn NPC button" reports).
+    local footer = vgui.Create("DPanel", frame)
+    footer:Dock(BOTTOM)
+    footer:SetTall(70)
+    footer:DockPadding(12, 10, 12, 12)
+    footer.Paint = function(s, w, h) draw.RoundedBox(6, 0, 0, w, h, Color(34, 34, 38)) end
+
+    local statusLabel = vgui.Create("DLabel", footer)
+    statusLabel:Dock(LEFT)
+    statusLabel:SetWide(620)
+    statusLabel:SetFont("AINPC_Body")
+    statusLabel:SetTextColor(subColor)
+    statusLabel:SetText("")
+
+    local spawnBtn = vgui.Create("DButton", footer)
+    spawnBtn:Dock(RIGHT)
+    spawnBtn:SetWide(200)
+    spawnBtn:SetTall(44)
+    spawnBtn:SetText("Spawn NPC")
+    spawnBtn:SetFont("AINPC_Header")
+
     -- ---- Layout ----
     local content = vgui.Create("DPanel", frame)
     content:Dock(FILL)
@@ -338,6 +370,21 @@ function AINPCS.OpenConfigPanel()
     modelLabel:SetFont("AINPC_Body")
     modelLabel:SetTextColor(labelColor)
 
+    -- Forward-declared: the filter needs to re-run the model population that is
+    -- defined further down.
+    local populateModels
+    local modelFilterText = ""
+
+    local modelFilter = vgui.Create("DTextEntry", modelSection)
+    modelFilter:Dock(TOP)
+    modelFilter:SetTall(24)
+    modelFilter:DockMargin(0, 2, 0, 4)
+    modelFilter:SetPlaceholderText("Filter models…")
+    modelFilter.OnValueChange = function(_, value)
+        modelFilterText = string.lower(AINPCS.Trim(value or ""))
+        if populateModels then populateModels() end
+    end
+
     local modelDropdown = vgui.Create("DComboBox", modelSection)
     modelDropdown:Dock(TOP)
     modelDropdown:SetTall(26)
@@ -387,7 +434,6 @@ function AINPCS.OpenConfigPanel()
 
     -- ---- Settings section (right col) ----
     local settingsSection = Section(rightCol, "Settings")
-
     local personalityLbl = vgui.Create("DLabel", settingsSection)
     personalityLbl:Dock(TOP)
     personalityLbl:SetText("Character description")
@@ -463,22 +509,33 @@ function AINPCS.OpenConfigPanel()
     ttsLabel:SetTall(18)
     ttsLabel:SetFont("AINPC_Body")
     ttsLabel:SetTextColor(labelColor)
-    ttsLabel:SetText("Text-to-speech")
+    ttsLabel:SetText("Voice")
 
-    local ttsDropdown = vgui.Create("DComboBox", settingsSection)
-    ttsDropdown:Dock(TOP)
-    ttsDropdown:SetTall(26)
-    ttsDropdown:DockMargin(0, 2, 0, 16)
-    local currentTTS = (Settings.enableTTS and Settings.ttsVoice) or "off"
-    ttsDropdown:AddChoice("Off",                          "off",            currentTTS == "off")
-    ttsDropdown:AddChoice("StreamElements (Brian)",       "streamelements", currentTTS == "streamelements")
-    ttsDropdown:AddChoice("SAPI4 Microsoft Sam (legacy)", "sapi4",          currentTTS == "sapi4")
+    local voiceDropdown = vgui.Create("DComboBox", settingsSection)
+    voiceDropdown:Dock(TOP)
+    voiceDropdown:SetTall(26)
+    voiceDropdown:DockMargin(0, 2, 0, 4)
+    local currentVoice = (Settings.enableTTS and Settings.ttsVoice) or "off"
+    voiceDropdown:AddChoice("Off — text only", "off", currentVoice == "off")
+    for _, v in ipairs(Voices.list) do
+        voiceDropdown:AddChoice(v.label, v.id, currentVoice == v.id)
+    end
 
-    local spawnBtn = vgui.Create("DButton", settingsSection)
-    spawnBtn:Dock(TOP)
-    spawnBtn:SetTall(48)
-    spawnBtn:SetText("Spawn NPC")
-    spawnBtn:SetFont("AINPC_Header")
+    local testVoiceBtn = vgui.Create("DButton", settingsSection)
+    testVoiceBtn:Dock(TOP)
+    testVoiceBtn:SetTall(24)
+    testVoiceBtn:DockMargin(0, 0, 0, 16)
+    testVoiceBtn:SetText("Test voice")
+    testVoiceBtn.DoClick = function()
+        local _, id = voiceDropdown:GetSelected()
+        if not id or id == "off" then
+            AINPCS.PushToast("Pick a voice first.", "info")
+            return
+        end
+        if not AINPCS.PreviewVoice(id) then
+            AINPCS.PushToast("That voice needs the relay — set ainpc_voice_relay.", "error")
+        end
+    end
 
     local howTo = vgui.Create("DLabel", settingsSection)
     howTo:Dock(TOP)
@@ -498,6 +555,47 @@ function AINPCS.OpenConfigPanel()
     local currentModelId = Settings.model or ""
     local currentReasoning = Settings.reasoning
 
+    -- One line that always tells the truth about what will be sent on spawn.
+    local function refreshStatus()
+        local p = providers.get(currentProviderId)
+        local keyOk = currentProviderId == "ollama" or not AINPCS.IsBlank(Settings.apiKeys[currentProviderId])
+
+        local _, selectedVoice = voiceDropdown:GetSelected()
+        local voiceText = (selectedVoice and selectedVoice ~= "off") and selectedVoice or "voice off"
+
+        local parts = {
+            (p and p.label) or currentProviderId,
+            (currentModelId ~= "" and currentModelId) or "no model selected",
+            voiceText,
+        }
+
+        local text = table.concat(parts, "   •   ")
+        if keyOk then
+            statusLabel:SetTextColor(subColor)
+            statusLabel:SetText(text)
+        else
+            statusLabel:SetTextColor(errColor)
+            statusLabel:SetText(text .. "      —  API key required")
+        end
+    end
+
+    function voiceDropdown:OnSelect(_, _, id)
+        Settings.enableTTS = id ~= "off"
+        Settings.ttsVoice  = id
+        refreshStatus()
+    end
+
+    keyEntry.OnValueChange = function(_, value)
+        Settings.apiKeys[currentProviderId] = AINPCS.Trim(value or "")
+        refreshStatus()
+    end
+
+    local function requestOpenRouterModels()
+        if currentProviderId ~= "openrouter" then return end
+        net.Start("AINPC_RequestORModels")
+        net.SendToServer()
+    end
+
     local function refreshKeyEntry()
         local p = providers.get(currentProviderId)
         if not p then return end
@@ -507,6 +605,7 @@ function AINPCS.OpenConfigPanel()
         getKeyBtn:SetText("Get " .. (p.id == "ollama" and "Ollama" or "free") .. " key →")
         getKeyBtn.DoClick = function() gui.OpenURL(p.getKeyUrl) end
         providerNote:SetText(p.note or "")
+        refreshStatus()
     end
 
     local function applyModelSettings(modelData)
@@ -556,23 +655,38 @@ function AINPCS.OpenConfigPanel()
         end
     end
 
-    local function populateModels()
+    populateModels = function()
         modelDropdown:Clear()
         local order, models = getModelMap(currentProviderId)
         local p = providers.get(currentProviderId)
 
         if order and #order > 0 then
             modelDropdown:SetVisible(true)
+            local filter = modelFilterText or ""
+            local shown = 0
+            local currentVisible = false
             for _, id in ipairs(order) do
                 local m = models[id]
                 if m then
-                    modelDropdown:AddChoice(m.label or id, id, id == currentModelId)
+                    local label = m.label or id
+                    if filter == "" or string.find(string.lower(label .. " " .. id), filter, 1, true) then
+                        modelDropdown:AddChoice(label, id, id == currentModelId)
+                        shown = shown + 1
+                        if id == currentModelId then currentVisible = true end
+                    end
                 end
             end
-            if not currentModelId or not models[currentModelId] then
-                currentModelId = order[1]
-                modelDropdown:ChooseOptionID(1)
+
+            if shown == 0 then
+                modelDropdown:SetVisible(false)
+            elseif not currentVisible then
+                -- Only auto-pick when nothing is selected or the selection is gone.
+                if not currentModelId or not models[currentModelId] then
+                    currentModelId = order[1]
+                    modelDropdown:ChooseOptionID(1)
+                end
             end
+
             modelCustomEntry:SetVisible(p and p.allowCustomModel == true)
             if p and p.allowCustomModel then
                 modelCustomEntry:SetText(Settings.model or "")
@@ -588,6 +702,13 @@ function AINPCS.OpenConfigPanel()
         local showHost = p and p.requiresHostname == true
         hostnameLabel:SetVisible(showHost)
         hostnameEntry:SetVisible(showHost)
+
+        -- The hardcoded list rotates; ask the server for today's free models.
+        if currentProviderId == "openrouter" and not LiveOpenRouterModels then
+            requestOpenRouterModels()
+        end
+
+        refreshStatus()
     end
 
     function frame:ReloadProviderModels()
@@ -600,6 +721,7 @@ function AINPCS.OpenConfigPanel()
         currentModelId = nil
         refreshKeyEntry()
         populateModels()
+        requestOpenRouterModels()
     end
 
     function modelDropdown:OnSelect(_, _, id)
@@ -607,6 +729,7 @@ function AINPCS.OpenConfigPanel()
         Settings.model = id
         local _, models = getModelMap(currentProviderId)
         applyModelSettings(models[id])
+        refreshStatus()
     end
 
     function reasoningDropdown:OnSelect(_, _, value)
@@ -624,9 +747,9 @@ function AINPCS.OpenConfigPanel()
         Settings.temperature = tempSlider:GetValue()
         Settings.reasoning = currentReasoning
 
-        local _, ttsKind = ttsDropdown:GetSelected()
-        Settings.enableTTS = ttsKind ~= "off"
-        Settings.ttsVoice = ttsKind ~= "off" and ttsKind or "off"
+        local _, voiceId = voiceDropdown:GetSelected()
+        Settings.enableTTS = voiceId ~= nil and voiceId ~= "off"
+        Settings.ttsVoice  = Settings.enableTTS and voiceId or "off"
 
         local modelId = currentModelId
         if modelCustomEntry:IsVisible() then
@@ -650,7 +773,7 @@ function AINPCS.OpenConfigPanel()
             temperature = Settings.temperature,
             reasoning   = currentReasoning,
             enableTTS   = Settings.enableTTS,
-            ttsVoice    = Settings.ttsVoice,
+            voiceId     = Settings.ttsVoice,
         })
         net.SendToServer()
 

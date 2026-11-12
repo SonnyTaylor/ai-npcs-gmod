@@ -9,7 +9,6 @@
 
 AINPCS          = AINPCS or {}
 AINPCS.Toasts   = AINPCS.Toasts or {}
-AINPCS.Sounds   = AINPCS.Sounds or {}
 AINPCS.LastChat = AINPCS.LastChat or {}   -- [entIndex] = { text, until }
 
 -- =============================================================================
@@ -197,7 +196,13 @@ net.Receive("AINPC_ChatReply", function()
     local isErr  = net.ReadBool()
 
     local idx = IsValid(ent) and ent:EntIndex() or 0
-    AINPCS.LastChat[idx] = { text = text, expires = RealTime() + 10 }
+    AINPCS.LastChat[idx] = {
+        text        = text,
+        isError     = isErr,
+        expires     = RealTime() + 10,
+        -- Subtitle bubble lifetime on the HUD, roughly the length of the voice line.
+        spokenUntil = isErr and 0 or (RealTime() + math.Clamp(#text / 14, 2.5, 9)),
+    }
 
     local win = AINPCS.ChatWindows[idx]
     if IsValid(win) then
@@ -214,77 +219,143 @@ net.Receive("AINPC_OpenChatUI", function()
 end)
 
 -- =============================================================================
--- TTS playback
+-- Voice playback
+--
+-- The server broadcasts (npc, voice id, text); every client builds the same urls
+-- from the shared registry, so an NPC sounds identical to everyone in the server.
+-- Long lines are split into chunks the engine will actually accept, played back
+-- to back, re-positioned every frame so a walking NPC keeps its voice attached to
+-- its head instead of leaving it behind where the sentence started.
 -- =============================================================================
 
-local function urlEncode(str)
-    str = str or ""
-    str = string.gsub(str, "\n", " ")
-    str = string.gsub(str, "([^%w%-%._~])", function(c)
-        return string.format("%%%02X", string.byte(c))
-    end)
-    return str
+local Voices = include("voices/voices.lua")
+
+local cvVoiceVolume = CreateClientConVar("ainpc_voice_volume", "1", true, false,
+    "AI NPC voice volume (0-1).", 0, 1)
+
+local warnedVoiceFailure = false
+local Players = {}     -- [entIndex] = { voice, chunks, nextIndex, snd, pending, failures }
+
+local function stopVoice(idx)
+    local p = Players[idx]
+    if not p then return end
+    if IsValid(p.snd) then p.snd:Stop() end
+    Players[idx] = nil
 end
 
-local function playStreamElements(ent, text)
-    local url = "https://api.streamelements.com/kappa/v2/speech?voice=Brian&text=" .. urlEncode(AINPCS.Truncate(text, 400))
-    sound.PlayURL(url, "3d mono", function(snd, errId, errName)
-        if not IsValid(snd) then return end
-        if IsValid(ent) then
-            snd:SetPos(ent:GetPos() + Vector(0, 0, 60))
-        end
-        snd:Set3DFadeDistance(200, 1400)
-        snd:SetVolume(1)
-        snd:Play()
-        AINPCS.Sounds[ent:EntIndex()] = snd
-    end)
-end
-
-local function playSAPI4(ent, text)
-    local url = "https://tetyys.com/SAPI4/SAPI4?voice=Sam&pitch=100&speed=150&text=" .. urlEncode(AINPCS.Truncate(text, 400))
-    sound.PlayURL(url, "3d mono", function(snd)
-        if not IsValid(snd) then return end
-        if IsValid(ent) then
-            snd:SetPos(ent:GetPos() + Vector(0, 0, 60))
-        end
-        snd:Set3DFadeDistance(200, 1400)
-        snd:SetVolume(1)
-        snd:Play()
-        AINPCS.Sounds[ent:EntIndex()] = snd
-    end)
+local function voiceError(errId, errName)
+    if warnedVoiceFailure then return end
+    warnedVoiceFailure = true
+    AINPCS.PushToast("Voice playback failed (" .. tostring(errName or errId) .. "). The voice host may be down or rate-limiting.", "error")
+    AINPCS.DebugPrint("[AI-NPCs] voice error " .. tostring(errId) .. ": " .. tostring(errName))
 end
 
 net.Receive("AINPC_TTSPlay", function()
-    local ent   = net.ReadEntity()
-    local voice = net.ReadString()
-    local text  = net.ReadString()
-    if not IsValid(ent) or text == "" then return end
+    local ent = net.ReadEntity()
+    local voiceId = net.ReadString()
+    local text = net.ReadString()
 
-    -- Stop any previous clip for this NPC
-    local old = AINPCS.Sounds[ent:EntIndex()]
-    if IsValid(old) then old:Stop() end
-    AINPCS.Sounds[ent:EntIndex()] = nil
+    if not IsValid(ent) then return end
+    Voices.SetRelay(GetGlobalString("AINPCVoiceRelay", "") or "")
 
-    if voice == "sapi4" then
-        playSAPI4(ent, text)
-    else
-        playStreamElements(ent, text)
-    end
+    local chunks = Voices.Split(text)
+    if #chunks == 0 then return end
+
+    local idx = ent:EntIndex()
+    stopVoice(idx)      -- a new line interrupts whatever is still playing
+    Players[idx] = {
+        voice = voiceId,
+        chunks = chunks,
+        nextIndex = 1,
+        snd = nil,
+        pending = false,
+        failures = 0,
+    }
 end)
 
--- Move TTS sounds with their NPC.
-hook.Add("Think", "AINPC_TTSFollow", function()
-    for idx, snd in pairs(AINPCS.Sounds) do
-        if not IsValid(snd) then
-            AINPCS.Sounds[idx] = nil
+-- One "engine" pass per frame: advance queues, keep the active chunk glued to the NPC.
+hook.Add("Think", "AINPC_VoiceEngine", function()
+    local volume = math.Clamp(cvVoiceVolume:GetFloat(), 0, 1)
+
+    for idx, p in pairs(Players) do
+        local ent = Entity(idx)
+
+        if not IsValid(ent) then
+            stopVoice(idx)                      -- dead/removed NPC = silence
+        elseif p.pending then
+            -- waiting for PlayURL to hand us a channel
+        elseif IsValid(p.snd) and p.snd:IsPlaying() then
+            p.snd:SetPos(ent:GetPos() + Vector(0, 0, 62))
         else
-            local ent = Entity(idx)
-            if IsValid(ent) then
-                snd:SetPos(ent:GetPos() + Vector(0, 0, 60))
+            p.snd = nil
+            local chunk = p.chunks[p.nextIndex]
+
+            if not chunk then
+                stopVoice(idx)                  -- done speaking
+            else
+                p.nextIndex = p.nextIndex + 1
+                local url = Voices.BuildURL(p.voice, chunk)
+
+                if url then
+                    p.pending = true
+                    local npc = ent
+
+                    sound.PlayURL(url, "3d mono", function(snd, errId, errName)
+                        if Players[idx] ~= p then return end     -- superseded meanwhile
+                        p.pending = false
+
+                        if not IsValid(snd) then
+                            p.failures = (p.failures or 0) + 1
+                            voiceError(errId, errName)
+                            if p.failures >= 3 then
+                                stopVoice(idx)                  -- host is down; stop trying
+                            end
+                            return
+                        end
+
+                        if not IsValid(npc) then
+                            p.pending = false
+                            return
+                        end
+
+                        snd:SetPos(npc:GetPos() + Vector(0, 0, 62))
+                        snd:Set3DFadeDistance(220, 1600)
+                        snd:SetVolume(volume)
+                        snd:Play()
+                        p.snd = snd
+                    end)
+                else
+                    p.failures = (p.failures or 0) + 1
+                    if p.failures >= 3 then stopVoice(idx) end
+                end
             end
         end
     end
 end)
+
+-- Entity indices are recycled: a dying NPC must not leave its voice keyed to an
+-- index that the next NPC will inherit.
+hook.Add("EntityRemoved", "AINPC_VoiceRemoved", function(ent)
+    if not IsValid(ent) then return end
+    stopVoice(ent:EntIndex())
+end)
+
+-- Used by the "Test voice" button in the config panel.
+function AINPCS.PreviewVoice(voiceId, sample)
+    Voices.SetRelay(GetGlobalString("AINPCVoiceRelay", "") or "")
+    local url = Voices.BuildURL(voiceId, sample or "Hello. This is what I sound like.")
+    if not url then return false end
+
+    sound.PlayURL(url, "mono", function(snd, errId, errName)
+        if not IsValid(snd) then
+            voiceError(errId, errName)
+            return
+        end
+        snd:SetVolume(math.Clamp(cvVoiceVolume:GetFloat(), 0, 1))
+        snd:Play()
+    end)
+    return true
+end
 
 -- =============================================================================
 -- Spawn result

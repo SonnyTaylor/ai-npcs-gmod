@@ -5,7 +5,7 @@
 ]]
 
 AINPCS = AINPCS or {}
-AINPCS.Version = "2.0.0"
+AINPCS.Version = "2.1.0"
 
 AINPCS.NetStrings = {
     "AINPC_SpawnRequest",
@@ -18,15 +18,17 @@ AINPCS.NetStrings = {
     "AINPC_TTSPlay",
     "AINPC_Toast",
     "AINPC_OpenRouterModels",
+    "AINPC_RequestORModels",
 }
 
 AINPCS.Defaults = {
     MaxHistoryTurns = 16,
     InteractRange = 140,
-    ProximityRange = 220,
     ChatCooldownSeconds = 1.5,
     SpawnCooldownSeconds = 5,
     MaxNPCsPerPlayer = 3,
+    -- Hard ceiling on a single provider round-trip. Without this the NPC sits on
+    -- "thinking..." forever when a provider never answers.
     RequestTimeout = 60,
 }
 
@@ -42,6 +44,7 @@ if SERVER then
     AddCSLuaFile("providers/openrouter.lua")
     AddCSLuaFile("providers/ollama.lua")
     AddCSLuaFile("providers/deepseek.lua")
+    AddCSLuaFile("voices/voices.lua")
 
     for _, name in ipairs(AINPCS.NetStrings) do
         util.AddNetworkString(name)
@@ -89,9 +92,13 @@ function AINPCS.NormaliseHostname(raw, defaultScheme)
 end
 
 -- Strict JSON parse that swallows nil gracefully.
+--
+-- ignoreLimits is essential: util.JSONToTable bails out at 15,000 keys by default,
+-- and provider payloads blow past that (OpenRouter's /v1/models is ~29k keys today).
+-- Without it the OpenRouter free-model refresh silently failed on every attempt.
 function AINPCS.SafeJSON(body)
     if not body or body == "" then return nil end
-    local ok, tbl = pcall(util.JSONToTable, body)
+    local ok, tbl = pcall(util.JSONToTable, body, true)
     if not ok then return nil end
     return tbl
 end

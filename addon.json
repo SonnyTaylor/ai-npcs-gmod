@@ -1,7 +1,7 @@
 {
   "title": "AI NPCs",
-  "description": "Spawn NPCs that talk back. Supports Groq (free), OpenRouter (free models), OpenAI, DeepSeek, and Ollama (self-hosted). Press E on an NPC to open a chat window, or just talk in chat when you're nearby. Walks you through getting a free API key on first launch.",
+  "description": "Spawn NPCs that talk back — out loud, from their own mouth. Pick a voice per NPC (13 languages), press E to chat, or just talk in chat when you're nearby. Supports Groq, OpenRouter, OpenAI, DeepSeek and Ollama (self-hosted), and can use cloned voices through a local voice relay.",
   "type": "npc",
   "tags": ["fun", "roleplay"],
-  "ignore": [".git/*", "README.md", "WORKSHOP_DESCRIPTION.md", "orm.json"]
+  "ignore": [".git/*", "README.md", "WORKSHOP_DESCRIPTION.md", "ROADMAP.md", "LICENSE", "lua/voices/README.md"]
 }

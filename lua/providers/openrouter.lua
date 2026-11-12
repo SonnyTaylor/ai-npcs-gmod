@@ -12,18 +12,20 @@ provider.label    = "OpenRouter (free models available)"
 provider.getKeyUrl = "https://openrouter.ai/keys"
 provider.note     = "Free models rotate. Sign up and get a key, then pick a :free model."
 
--- Fallback preset — used only if the live fetch fails. These are known-good
--- as of the last addon update, but the live fetch supersedes them.
+-- Fallback preset — used only if the live fetch fails. These are genuinely free
+-- and text-only as of 2026-11; the live fetch supersedes them, and the previous
+-- fallback list was entirely delisted by OpenRouter (every id 404'd).
 provider.modelOrder = {
     "openrouter/free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "openai/gpt-oss-120b:free",
-    "openai/gpt-oss-20b:free",
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "z-ai/glm-4.5-air:free",
-    "google/gemma-3-27b-it:free",
-    "nousresearch/hermes-3-llama-3.1-405b:free",
-    "cognitivecomputations/dolphin-mistral-24b-venice-edition:free",
+    "nvidia/nemotron-3-ultra-550b-a55b:free",
+    "nvidia/nemotron-3.5-lightning:free",
+    "baidu/ernie-5.5-flash-preview:free",
+    "google/gemma-4-31b-it:free",
+    "google/gemma-4-26b-a4b-it:free",
+    "thinkingmachines/inkling-2-small:free",
+    "dots-studio/dots-3-note-preview:free",
+    "recursive/flint-v1.0:free",
+    "liquid/lfm-3-1.7b:free",
 }
 
 local function defaults(label, ctxMax, reasoning, tools)
@@ -37,15 +39,16 @@ local function defaults(label, ctxMax, reasoning, tools)
 end
 
 provider.models = {
-    ["openrouter/free"]                                = defaults("Free Models Router (auto-pick)", 200000, true, true),
-    ["meta-llama/llama-3.3-70b-instruct:free"]         = defaults("Llama 3.3 70B Instruct (free)", 65536, false, true),
-    ["openai/gpt-oss-120b:free"]                       = defaults("GPT-OSS 120B (free, reasoning)", 131072, true, true),
-    ["openai/gpt-oss-20b:free"]                        = defaults("GPT-OSS 20B (free, reasoning)", 131072, true, true),
-    ["qwen/qwen3-next-80b-a3b-instruct:free"]          = defaults("Qwen3 Next 80B (free, huge ctx)", 262144, false, true),
-    ["z-ai/glm-4.5-air:free"]                          = defaults("GLM 4.5 Air (free, reasoning)", 131072, true, true),
-    ["google/gemma-3-27b-it:free"]                     = defaults("Gemma 3 27B (free)", 131072, false, false),
-    ["nousresearch/hermes-3-llama-3.1-405b:free"]      = defaults("Hermes 3 405B (free, RP-tuned)", 131072, false, false),
-    ["cognitivecomputations/dolphin-mistral-24b-venice-edition:free"] = defaults("Venice Uncensored 24B (free)", 32768, false, false),
+    ["openrouter/free"]                        = defaults("Free Models Router (auto-pick)", 200000, true, true),
+    ["nvidia/nemotron-3-ultra-550b-a55b:free"] = defaults("Nemotron 3 Ultra 550B (free, reasoning)", 200000, true, true),
+    ["nvidia/nemotron-3.5-lightning:free"]     = defaults("Nemotron 3.5 Lightning (free, fast)", 200000, true, true),
+    ["baidu/ernie-5.5-flash-preview:free"]     = defaults("ERNIE 5.5 Flash (free, huge ctx)", 200000, true, true),
+    ["google/gemma-4-31b-it:free"]             = defaults("Gemma 4 31B (free)", 65536, true, true),
+    ["google/gemma-4-26b-a4b-it:free"]         = defaults("Gemma 4 26B A4B (free)", 65536, true, true),
+    ["thinkingmachines/inkling-2-small:free"]  = defaults("Inkling 2 Small (free)", 65536, false, false),
+    ["dots-studio/dots-3-note-preview:free"]   = defaults("Dots 3 Note (free)", 65536, true, true),
+    ["recursive/flint-v1.0:free"]              = defaults("Flint v1.0 (free, RP-leaning)", 65536, false, false),
+    ["liquid/lfm-3-1.7b:free"]                 = defaults("LFM 3 1.7B (free, tiny)", 32768, false, false),
 }
 
 if SERVER then
@@ -155,7 +158,17 @@ if SERVER then
                     local promptPrice = tonumber(price.prompt or "1") or 1
                     local complPrice  = tonumber(price.completion or "1") or 1
 
-                    if promptPrice == 0 and complPrice == 0 and id ~= "" then
+                    -- Chat models only: audio/image generators (e.g. google/lyria)
+                    -- are priced at zero too, but can never answer an NPC line.
+                    local outs = (m.architecture or {}).output_modalities
+                    local textOnly = true
+                    if istable(outs) then
+                        for _, modality in ipairs(outs) do
+                            if modality ~= "text" then textOnly = false end
+                        end
+                    end
+
+                    if textOnly and promptPrice == 0 and complPrice == 0 and id ~= "" then
                         local sp = m.supported_parameters or {}
                         local hasReasoning, hasTools = false, false
                         for _, p in ipairs(sp) do
@@ -228,14 +241,33 @@ if SERVER then
         })
     end
 
-    -- Kick off a refresh on startup (5s delay so HTTP is ready).
-    hook.Add("Initialize", "AINPC_OpenRouterFirstRefresh", function()
-        timer.Simple(5, function() provider.refresh() end)
-    end)
+    -- Kick off a refresh as soon as this file is included. The server eagerly
+    -- includes this provider at boot (see sv_gmodainpc.lua), so the timers below
+    -- exist for the whole session. Do NOT gate this behind the "Initialize" hook:
+    -- this file loads lazily on first use, long after Initialize has fired.
+    timer.Simple(5, function() provider.refresh() end)
 
     -- Refresh once a day.
     timer.Create("AINPC_OpenRouterRefresh", 24 * 60 * 60, 0, function()
         provider.refresh()
+    end)
+
+    -- The config panel asks for the list when the user looks at the dropdown, so a
+    -- freshly-joined client never stares at the stale hardcoded fallback list.
+    local NextRequest = {}
+    net.Receive("AINPC_RequestORModels", function(len, ply)
+        if not IsValid(ply) then return end
+        local key = ply:SteamID64() or ("ent_" .. ply:EntIndex())
+        local now = CurTime()
+        if (NextRequest[key] or 0) > now then return end
+        NextRequest[key] = now + 5
+
+        local fresh = provider._fetchedList and (os.time() - (provider._fetchedAt or 0)) < 24 * 60 * 60
+        if fresh then
+            sendModelsTo(ply)
+        else
+            provider.refresh()   -- broadcasts to everyone on success
+        end
     end)
 
     -- Send current models to any player who joins after refresh.
