@@ -4,7 +4,7 @@
       * the E-to-talk chat popup
       * toast notifications
       * chat reply rendering (chat area + optional speech bubble log)
-      * TTS playback with per-NPC sound tracking
+      * per-NPC voice playback, chunked and positioned in 3D
 ]]
 
 AINPCS          = AINPCS or {}
@@ -283,7 +283,13 @@ hook.Add("Think", "AINPC_VoiceEngine", function()
         if not IsValid(ent) then
             stopVoice(idx)                      -- dead/removed NPC = silence
         elseif p.pending then
-            -- waiting for PlayURL to hand us a channel
+            -- Waiting for PlayURL to hand us a channel. A callback that never
+            -- arrives would otherwise stall this NPC's queue forever.
+            if RealTime() - (p.pendingSince or 0) > 5 then
+                p.pending = false
+                p.failures = (p.failures or 0) + 1
+                if p.failures >= 3 then stopVoice(idx) end
+            end
         elseif IsValid(p.snd) and p.snd:IsPlaying() then
             p.snd:SetPos(ent:GetPos() + Vector(0, 0, 62))
         else
@@ -298,6 +304,7 @@ hook.Add("Think", "AINPC_VoiceEngine", function()
 
                 if url then
                     p.pending = true
+                    p.pendingSince = RealTime()
                     local npc = ent
 
                     sound.PlayURL(url, "3d mono", function(snd, errId, errName)
