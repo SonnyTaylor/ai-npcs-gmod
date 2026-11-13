@@ -5,7 +5,7 @@
 ]]
 
 AINPCS = AINPCS or {}
-AINPCS.Version = "2.5.0"
+AINPCS.Version = "3.0.0"
 
 AINPCS.NetStrings = {
     "AINPC_SpawnRequest",
@@ -35,7 +35,8 @@ AINPCS.Defaults = {
 if SERVER then
     AddCSLuaFile("autorun/sh_ainpcs_core.lua")
     AddCSLuaFile("autorun/sh_ainpcs_debug.lua")
-    AddCSLuaFile("autorun/client/cl_gmodainpc.lua")
+    AddCSLuaFile("autorun/client/cl_0_ainpcs_shared.lua")
+    AddCSLuaFile("autorun/client/cl_ainpcs_panel.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_interact.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_hud.lua")
     AddCSLuaFile("providers/providers.lua")

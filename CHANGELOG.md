@@ -3,6 +3,39 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [3.0.0] — UI rebuild
+
+The old panel was one screen with every control on it: provider, model, tokens,
+temperature, reasoning, key, voice, voice search, body, description, spawn. Nobody
+could tell what they were supposed to do first, and voice lists mixed keyless
+Google voices with Fish Audio character voices in the same dropdown.
+
+### New structure: three pages
+
+**Library** — every NPC you saved, with name, voice, body and reply speed, plus
+Spawn / Edit / delete. Stored in `data/ai_npcs_library.json`.
+
+**Create** — a guided 4-step maker with a step bar and Back/Next:
+1. *Identity* — name; description optional (a known character name is enough)
+2. *Voice* — search your voice service, click a result, preview it
+3. *Body* — pick the model, with a 3D preview
+4. *Behaviour* — reply speed (instant / a little thinking / balanced) and "speak out loud"
+5. *Review* — summary, then Save to library or Save & spawn
+
+**Settings** — the technical stuff, touched once: provider, model (free-only
+toggle), API key, Ollama hostname, Fish Audio key + service status, fallback
+voice, volume. The NPC maker never asks about tokens, temperature or model ids.
+
+### Changed
+- Voice lists are no longer mixed: the maker only offers character voices from the
+  voice service; keyless Google/SAPI4 voices became the "fallback voice" in
+  Settings, used when an NPC has no character voice or the service is down.
+- Saved NPCs are reusable, so the same character no longer has to be rebuilt.
+- Rewritten on `DListLayout`/`DPropertySheet`, which also removes the class of
+  "docked panel with no height" bugs behind the earlier collapsed-sections report.
+- Client code split: `cl_0_ainpcs_shared.lua` (settings, library, voice service,
+  model cache, spawn) and `cl_ainpcs_panel.lua` (UI only).
+
 ## [2.5.0]
 
 ### Added
