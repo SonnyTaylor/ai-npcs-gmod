@@ -3,6 +3,17 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [2.3.1]
+
+### Fixed
+- **Every section of the spawn panel was collapsed to its title row.** The cards
+  were `DPanel`s docked `TOP`, and a docked-TOP panel has no intrinsic height in
+  GMod, so the provider/model/NPC/settings controls were clipped out of view.
+  Cards now live on the scroll panel's canvas (`AddItem`) and are measured with
+  `SizeToChildren` once populated, with a fallback that sums child heights.
+- `populateModels` is now wrapped in `pcall` and reports failures as a toast +
+  console line instead of silently leaving "no model selected".
+
 ## [2.3.0]
 
 ### Added

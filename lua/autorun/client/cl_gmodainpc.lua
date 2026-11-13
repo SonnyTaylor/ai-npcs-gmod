@@ -158,10 +158,21 @@ local errColor   = Color(235, 80, 80)
 local okColor    = Color(90, 200, 120)
 
 local function Section(parent, title)
-    local p = vgui.Create("DPanel", parent)
-    p:Dock(TOP)
+    local p = vgui.Create("DPanel")
+
+    -- DScrollPanel children belong to its canvas, not the scroll panel itself, or
+    -- they render but never scroll.
+    if istable(parent) and parent.AddItem then
+        parent:AddItem(p)
+        p:Dock(TOP)
+    else
+        p:SetParent(parent)
+        p:Dock(TOP)
+    end
+
     p:DockMargin(0, 0, 0, 10)
     p:DockPadding(12, 10, 12, 12)
+    p:SetTall(40)          -- provisional; FitSections() measures the real height
     p.Paint = function(s, w, h)
         draw.RoundedBox(6, 0, 0, w, h, Color(40, 40, 44))
     end
@@ -193,6 +204,29 @@ local function LabeledEntry(parent, label, placeholder)
     entry:DockMargin(0, 2, 0, 8)
     if placeholder then entry:SetPlaceholderText(placeholder) end
     return entry
+end
+
+-- A panel docked TOP has no intrinsic height in GMod, and children docked inside a
+-- zero-height parent are clipped. That is exactly what v2.3.0 shipped: every card
+-- showed its title row and nothing else. Measure the cards once they are populated.
+local function FitSections(cards)
+    for _, card in ipairs(cards) do
+        if IsValid(card) then
+            card:SizeToChildren(false, true)
+
+            local _, h = card:GetSize()
+            if h < 60 then
+                -- Belt and braces: sum the docked children ourselves.
+                local sum = 0
+                for _, child in ipairs(card:GetChildren()) do
+                    sum = sum + (child:GetTall() or 0)
+                end
+                card:SetTall(sum + 26)
+            end
+
+            card:InvalidateLayout(true)
+        end
+    end
 end
 
 local function getModelMap(providerId)
@@ -372,7 +406,7 @@ function AINPCS.OpenConfigPanel()
     providerNote:SetFont("AINPC_Small")
     providerNote:SetTextColor(subColor)
     providerNote:SetWrap(true)
-    providerNote:SetAutoStretchVertical(true)
+    providerNote:SetTall(34)
     providerNote:DockMargin(0, 0, 0, 8)
     providerNote:SetText("")
 
@@ -949,9 +983,23 @@ function AINPCS.OpenConfigPanel()
         frame:Close()
     end
 
+    -- Give the section cards their real height (see FitSections).
+    local cards = { providerSection, modelSection, npcSection, settingsSection }
+    timer.Simple(0,   function() FitSections(cards) end)
+    timer.Simple(0.2, function() FitSections(cards) end)
+
     -- Initial state
     refreshKeyEntry()
-    populateModels()
+
+    local modelsOk, modelsErr = pcall(populateModels)
+    if not modelsOk then
+        print("[AI-NPCs] populateModels failed: " .. tostring(modelsErr))
+        AINPCS.PushToast("Model list failed: " .. tostring(modelsErr), "error")
+    end
+
+    local order, models = getModelMap(currentProviderId)
+    AINPCS.DebugPrint(string.format("[AI-NPCs] panel: provider=%s order=%d models=%d selected=%s",
+        tostring(currentProviderId), #order, #models, tostring(currentModelId)))
 
     -- Populate the voice picker with whatever the player's relay already knows.
     relayRequest("/voices?limit=40", function(voices)
