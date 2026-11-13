@@ -3,5 +3,5 @@
   "description": "Spawn NPCs that talk back — out loud, from their own mouth. Pick a voice per NPC (13 languages), press E to chat, or just talk in chat when you're nearby. Supports Groq, OpenRouter, OpenAI, DeepSeek and Ollama (self-hosted), and can use cloned voices through a local voice relay.",
   "type": "npc",
   "tags": ["fun", "roleplay"],
-  "ignore": [".git/*", "README.md", "WORKSHOP_DESCRIPTION.md", "ROADMAP.md", "LICENSE", "lua/voices/README.md"]
+  "ignore": [".git/*", "README.md", "WORKSHOP_DESCRIPTION.md", "ROADMAP.md", "CHANGELOG.md", "LICENSE", ".gitignore", "relay/*", "lua/voices/README.md"]
 }
