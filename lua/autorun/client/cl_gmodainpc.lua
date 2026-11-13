@@ -7,6 +7,42 @@
 local providers = include("providers/providers.lua")
 local Voices    = include("voices/voices.lua")
 
+-- Each player points at their OWN relay (which holds their OWN Fish Audio key), so
+-- this is a client convar. The server's ainpc_voice_relay only supplies a default.
+local cvVoiceRelay = CreateClientConVar("ainpc_voice_relay_url", "", true, false,
+    "Base URL of your local AI NPCs voice relay. Empty = server default / 127.0.0.1:7171")
+
+local function relayBase()
+    local url = cvVoiceRelay and cvVoiceRelay:GetString() or ""
+    if url == "" then url = GetGlobalString("AINPCVoiceRelay", "") or "" end
+    if url == "" then url = "http://127.0.0.1:7171" end
+    return (string.gsub(url, "/+$", ""))
+end
+
+local function relayRequest(path, callback)
+    HTTP({
+        url = relayBase() .. path,
+        method = "get",
+        headers = { ["Accept"] = "application/json" },
+        success = function(code, body)
+            local parsed = (code == 200) and AINPCS.SafeJSON(body) or nil
+            callback(istable(parsed) and parsed.voices or nil, code)
+        end,
+        failed = function(err) callback(nil, err) end,
+    })
+end
+
+local function registerRelayVoices(list)
+    local added = 0
+    for _, v in ipairs(list or {}) do
+        if isstring(v.name) and isstring(v.label) and not Voices.Get("relay:" .. v.name) then
+            Voices.Register("relay:" .. v.name, v.label)
+            added = added + 1
+        end
+    end
+    return added
+end
+
 -- =============================================================================
 -- Persisted settings (stored client-side so the user doesn't re-enter keys).
 -- =============================================================================
@@ -515,11 +551,48 @@ function AINPCS.OpenConfigPanel()
     voiceDropdown:Dock(TOP)
     voiceDropdown:SetTall(26)
     voiceDropdown:DockMargin(0, 2, 0, 4)
-    local currentVoice = (Settings.enableTTS and Settings.ttsVoice) or "off"
-    voiceDropdown:AddChoice("Off — text only", "off", currentVoice == "off")
-    for _, v in ipairs(Voices.list) do
-        voiceDropdown:AddChoice(v.label, v.id, currentVoice == v.id)
+
+    -- Rebuilt whenever the relay hands us more voices (search results, presets).
+    local function fillVoiceDropdown(selectedId)
+        local current = selectedId or (Settings.enableTTS and Settings.ttsVoice) or "off"
+        voiceDropdown:Clear()
+        voiceDropdown:AddChoice("Off — text only", "off", current == "off")
+        local picked = false
+        for _, v in ipairs(Voices.list) do
+            local isCurrent = (v.id == current)
+            voiceDropdown:AddChoice(v.label, v.id, isCurrent)
+            picked = picked or isCurrent
+        end
+        if not picked and current ~= "off" then
+            -- A relay voice id that this client's relay no longer lists.
+            voiceDropdown:AddChoice(current .. " (missing)", current, true)
+        end
     end
+    fillVoiceDropdown()
+
+    local voiceSearchEntry = vgui.Create("DTextEntry", settingsSection)
+    voiceSearchEntry:Dock(TOP)
+    voiceSearchEntry:SetTall(24)
+    voiceSearchEntry:DockMargin(0, 6, 0, 4)
+    voiceSearchEntry:SetPlaceholderText("Search relay voices (e.g. peter griffin) or paste a model id")
+
+    local voiceSearchBtn = vgui.Create("DButton", settingsSection)
+    voiceSearchBtn:Dock(TOP)
+    voiceSearchBtn:SetTall(24)
+    voiceSearchBtn:DockMargin(0, 0, 0, 4)
+    voiceSearchBtn:SetText("Search voices")
+
+    local voiceResults = vgui.Create("DComboBox", settingsSection)
+    voiceResults:Dock(TOP)
+    voiceResults:SetTall(26)
+    voiceResults:DockMargin(0, 0, 0, 4)
+    voiceResults:SetText("Search results appear here")
+
+    local relaySetupBtn = vgui.Create("DButton", settingsSection)
+    relaySetupBtn:Dock(TOP)
+    relaySetupBtn:SetTall(22)
+    relaySetupBtn:DockMargin(0, 0, 0, 16)
+    relaySetupBtn:SetText("Voice relay setup (your own API key)")
 
     local testVoiceBtn = vgui.Create("DButton", settingsSection)
     testVoiceBtn:Dock(TOP)
@@ -588,6 +661,60 @@ function AINPCS.OpenConfigPanel()
     keyEntry.OnValueChange = function(_, value)
         Settings.apiKeys[currentProviderId] = AINPCS.Trim(value or "")
         refreshStatus()
+    end
+
+    -- ---- Voice relay (each player supplies their own Fish Audio key there) ----
+    local function applyVoiceSearchResults(voices, err)
+        voiceResults:Clear()
+
+        if not voices or #voices == 0 then
+            voiceResults:SetText("No matches" .. (err and (" (" .. tostring(err) .. ")") or ""))
+            AINPCS.PushToast("Voice relay: " .. tostring(err or "no matches") .. " — is it running at " .. relayBase() .. "?", "error")
+            return
+        end
+
+        registerRelayVoices(voices)
+        for _, v in ipairs(voices) do
+            voiceResults:AddChoice(v.label, v.name, false)
+        end
+        voiceResults:SetText(string.format("%d result%s — pick one", #voices, #voices == 1 and "" or "s"))
+    end
+
+    local function runVoiceSearch()
+        local query = AINPCS.Trim(voiceSearchEntry:GetValue() or "")
+        if query == "" then
+            -- Empty search = show whatever the relay knows about, capped.
+            relayRequest("/voices?limit=40", applyVoiceSearchResults)
+            return
+        end
+
+        -- 32-hex is a model id; anything else is a title search.
+        local path
+        if #query >= 20 and string.match(query, "^%x+$") then
+            path = "/voices?id=" .. query
+        else
+            path = "/voices?q=" .. Voices.Encode(query) .. "&limit=25"
+        end
+        relayRequest(path, applyVoiceSearchResults)
+    end
+
+    voiceSearchBtn.DoClick = runVoiceSearch
+    voiceSearchEntry.OnEnter = runVoiceSearch
+    relaySetupBtn.DoClick = function() gui.OpenURL(relayBase() .. "/") end
+
+    function voiceResults:OnSelect(_, _, name)
+        if not isstring(name) then return end
+        local id = "relay:" .. name
+        if not Voices.Get(id) then
+            -- Picked something we only have an id for; label it and move on.
+            Voices.Register(id, "relay:" .. name:sub(1, 8))
+            fillVoiceDropdown(id)
+        end
+        fillVoiceDropdown(id)
+        Settings.ttsVoice = id
+        Settings.enableTTS = true
+        refreshStatus()
+        AINPCS.PushToast("Voice set to " .. id, "success")
     end
 
     local function requestOpenRouterModels()
@@ -783,6 +910,11 @@ function AINPCS.OpenConfigPanel()
     -- Initial state
     refreshKeyEntry()
     populateModels()
+
+    -- Populate the voice picker with whatever the player's relay already knows.
+    relayRequest("/voices?limit=40", function(voices)
+        if registerRelayVoices(voices) > 0 then fillVoiceDropdown() end
+    end)
 
     -- Preview the currently-selected NPC
     net.Start("AINPC_ModelPreview")

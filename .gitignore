@@ -1,0 +1,9 @@
+# relay: local secrets + generated audio
+relay/config.json
+relay/cache/
+relay/__pycache__/
+*.pyc
+
+# editor/OS noise
+.DS_Store
+Thumbs.db

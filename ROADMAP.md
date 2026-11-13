@@ -75,11 +75,18 @@ working where it genuinely does.
 Spec: [`lua/voices/README.md`](lua/voices/README.md) (already implements the
 GMod side: `relay:` voices, `ainpc_voice_relay`, per-NPC voice, chunked playback).
 
-- [ ] **Companion relay service.** Small FastAPI/Node app: `/health`, `/voices`,
-      `/tts`, `/clone`, disk cache keyed by `hash(voice, text)`.
+- [x] **Relay service** (`relay/server.py`, stdlib only): `/health`, `/voices`
+      (search + id lookup), `/tts`, `/config`, `/presets`, disk cache keyed by
+      `hash(voice, text)`.
+- [x] **Character voices from the Fish Audio library**, with in-panel search and
+      pinned voices; each player supplies their own key via `ainpc_voice_relay_url`.
+- [x] **Key hygiene**: env-supplied keys are never written to disk, `config.json`
+      and `cache/` are gitignored, the key never enters GMod.
 - [ ] **Engine decision** — XTTS-v2 (local zero-shot cloning) vs Piper (fast, per
       voice training) vs ElevenLabs (best, paid, third-party). One decision, then
       the service is small.
+- [ ] **Retro engines**: DECtalk / SAM / espeak-ng behind the relay (stubs detect
+      the binaries today; DECtalk wiring still to do).
 - [ ] **Sample extraction tool** for a cloned cast: pull `sound/vo/npc/*` out of
       `garrysmod_dir.vpk` / HL2 VPKs, pick clean 10–30s references per character,
       normalise to 22050 mono wav.

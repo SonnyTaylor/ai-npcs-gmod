@@ -60,13 +60,27 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 
 ## Voices
 
-Pick a voice per NPC in the spawn panel. Voices are broadcast from the server, so every player hears the same NPC the same way, and nobody needs a key to listen.
+Pick a voice per NPC in the spawn panel. The server decides which voice speaks, every client plays it, so an NPC sounds identical to everyone in the server.
 
 | Engine | What you get |
 |---|---|
 | `google:<lang>` | Keyless, 13 languages (en, de, ru, fr, es, it, pt, pl, nl, sv, da, tr, ja) |
 | `sapi4:<voice>` | Retro Microsoft Sam / Mike / Mary |
-| `relay:<name>` | Cloned voices from a local voice relay — see [`lua/voices/README.md`](lua/voices/README.md) |
+| `relay:<id>` | The whole Fish Audio character library (Peter Griffin, Rick Sanchez, Metal Sonic, Hatsune Miku, TF2 Soldier, …) plus optional retro engines |
+
+### Cloned / character voices (your own key)
+
+Character voices need a voice model service, and those cost money — so **you supply your own key**. It is never bundled with the addon and never sent to a server you're playing on.
+
+1. Get a [Fish Audio](https://fish.audio) API key.
+2. Run the relay that ships in `relay/`:
+   ```
+   python relay/server.py
+   ```
+3. Open <http://127.0.0.1:7171>, paste your key, and pin the voices you want.
+4. In game, use **Voice → Search voices**: type `peter griffin`, or paste a model id, and pick a result. Pinned voices are already in the dropdown.
+
+`ainpc_voice_relay_url` (client) points at your relay; it defaults to `http://127.0.0.1:7171`. Searching and listing voices is free — only generating audio spends credits. Each chunk of a line is cached on disk, so a repeated bark costs nothing the second time.
 
 `ainpc_voice_volume` (client) controls playback volume. "Test voice" in the panel previews the selected voice.
 
@@ -86,7 +100,7 @@ All of these are `FCVAR_ARCHIVE` so they persist across restarts.
 | `ainpc_interact_range` | 140 | Distance for press-E-to-talk |
 | `ainpc_tts_allowed` | 1 | Allow clients to enable TTS |
 | `ainpc_openrouter_autorefresh` | 1 | Auto-fetch OpenRouter free models daily |
-| `ainpc_voice_relay` | `` (empty) | Base URL of the optional voice relay serving cloned voices, e.g. `http://127.0.0.1:7171` |
+| `ainpc_voice_relay` | `` (empty) | Server default for the voice relay (players can override with their own `ainpc_voice_relay_url`) |
 | `ainpc_voice_volume` | 1 | Client-side voice volume (0–1) |
 
 ## Manual installation

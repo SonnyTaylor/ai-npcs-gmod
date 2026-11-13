@@ -1,12 +1,15 @@
-# Voice relay (cloned voices)
+# Voice relay (character + cloned voices)
 
 GMod can only play audio from a **URL**, and it must never hold an API key. So
-anything that needs a key or a model — ElevenLabs cloning, OpenAI TTS, XTTS,
-Piper — lives in one small local service, and the addon just points at it:
+anything that needs a key or a model lives in one small local service that **each
+player runs themselves**, with **their own** Fish Audio key:
 
 ```
-ainpc_voice_relay "http://127.0.0.1:7171"
+ainpc_voice_relay_url "http://127.0.0.1:7171"
 ```
+
+A working implementation ships in [`relay/server.py`](../../relay/server.py)
+(Python 3 standard library only, no install step).
 
 Once that convar is set, the config panel grows a `relay:<name>` voice for every
 voice the relay advertises, and the audio still comes out of the NPC's mouth like
@@ -19,10 +22,14 @@ hot path of a chat reply.
 
 | Method | Path | Response |
 |---|---|---|
-| `GET` | `/health` | `{"ok": true, "engine": "xtts-v2"}` |
-| `GET` | `/voices` | `{"voices": [{"name": "barney", "label": "Barney — HL2"}]}` |
-| `GET` | `/tts?voice=<name>&text=<text>` | raw audio, one chunk, `audio/wav` |
-| `POST` | `/clone` | `{"name": ..., "label": ..., "samples": ["<path or b64>"]}` → `{"ok": true}` |
+| `GET` | `/` | Setup page: paste key, pin voices, browse library |
+| `GET` | `/health` | `{"ok": true, "key_set": true, "presets": 10, ...}` |
+| `GET` | `/voices` | `{"voices": [{"name": "<id>", "label": "Rick Sanchez"}]}` — pinned first |
+| `GET` | `/voices?q=peter%20griffin` | server-side title search across the whole library |
+| `GET` | `/voices?id=<model id>` | one model by id (for pasted ids) |
+| `GET` | `/tts?voice=<id>&text=<text>` | raw `audio/wav`, one chunk, disk cached |
+| `POST` | `/config` | `{"key": "sk-fish-..."}` — validated against the API |
+| `POST` | `/presets` | `{"id": "<model id>"}` or `{"id": ..., "remove": true}` |
 
 Rules that matter:
 
@@ -36,6 +43,19 @@ Rules that matter:
   the addon only does GETs with no headers.
 - `voice` may be anything you like (`barney`, `kleiner`, `breen`). The addon does
   no validation beyond `^%w+$` before the colon.
+
+## Fish Audio specifics (what the shipped relay does)
+
+- **Listing and search cost nothing.** `GET /model?title=<q>` is a real server-side
+  search across the whole library — the plain listing only exposes a 1000-model
+  window, which is why filtering that window locally missed half the characters.
+  Only `/v1/tts` spends credits, and every rendered chunk is cached on disk by
+  `sha256(voice + text)`, so repeat lines are free.
+- **The key never touches the addon.** `FISH_API_KEY` from the environment is not
+  written to `config.json`; a key pasted into the setup page is, with `0600` where
+  the OS supports it. `config.json` and `cache/` are gitignored.
+- **Voices are just model ids.** Any 32-hex id from fish.audio works — pin it in the
+  setup page, or paste it into the in-game "Search voices" box.
 
 ## Cloned voice library — the interesting part
 
@@ -74,7 +94,10 @@ local service, let each user build their own library from their own game files.
 
 ## What the addon already does
 
-- `relay:<name>` voice ids, ordered after the built-in ones in the panel.
+- `relay:<id>` voice ids registered from the relay, with in-panel search (title or
+  pasted model id) and pinned voices listed first.
+- `ainpc_voice_relay_url` client convar, so each player uses their own relay/key —
+  the server only supplies a default.
 - `ainpc_voice_relay` convar, replicated to clients via a global string so the
   "Test voice" button hits the same host.
 - Per-NPC voice selection at spawn time, broadcast to every client so all players
