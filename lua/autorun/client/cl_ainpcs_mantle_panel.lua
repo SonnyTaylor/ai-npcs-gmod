@@ -127,6 +127,14 @@ function UI.StatusPill(parent, width)
                 self.title:SetText("voice service: NOT running")
                 self.sub:SetText("tried " .. tostring(AINPCS._relayTried or AINPCS.RelayBase()))
             end
+        elseif info.local_blocked then
+            -- Expected on a default install: Garry's Mod refuses client HTTP to
+            -- loopback. Everything still works — the voice list and the key travel
+            -- as files, and audio goes through sound.PlayURL (BASS, not the Lua HTTP
+            -- shim), so this is a healthy state, not a warning.
+            self.dot._color = UI.sem.ok
+            self.title:SetText("voice service: ready (file mode)")
+            self.sub:SetText("Garry's Mod blocks HTTP to loopback; voices and the key use files")
         elseif info.file_only then
             -- The relay's heartbeat file says it is up, but the game's own HTTP
             -- client could not reach it. That is a firewall/sandbox problem, not a

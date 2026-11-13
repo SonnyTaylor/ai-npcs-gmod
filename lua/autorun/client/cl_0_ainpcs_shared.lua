@@ -229,6 +229,31 @@ local function relayGet(path, callback)
 end
 
 function AINPCS.RelayVoices(query, callback)
+    local published = readDataTable(VOICES_FILE)
+
+    if published and istable(published.voices) then
+        local needle = string.lower(AINPCS.Trim(query or ""))
+        local out, seen = {}, {}
+
+        for _, v in ipairs(published.voices) do
+            if isstring(v.name) and isstring(v.label) and not seen[v.name] then
+                local matches = needle == ""
+                    or string.find(string.lower(v.label), needle, 1, true)
+                    or string.find(string.lower(v.name), needle, 1, true)
+
+                if matches then
+                    seen[v.name] = true
+                    Voices.Register("relay:" .. v.name, v.label)
+                    out[#out + 1] = { name = v.name, label = v.label }
+                end
+            end
+        end
+
+        callback(out)
+        return
+    end
+
+    -- No published list: an older relay. HTTP only works with -allowlocalhttp.
     local path = "/voices?limit=40"
     if query and query ~= "" then path = "/voices?q=" .. Voices.Encode(query) .. "&limit=20" end
     relayGet(path, function(body, code)
@@ -256,6 +281,23 @@ end
 -- host-name guessing, and it carries the exact URL the relay bound.
 local STATUS_FILE  = "ainpc_relay_status.json"
 local STATUS_FRESH = 20      -- seconds; the relay rewrites it every 2s while idle
+
+-- Garry's Mod refuses client HTTP to private networks -- "Requests to local
+-- resources are not allowed" -- unless the game was launched with -allowlocalhttp.
+-- The panel cannot depend on a launch parameter, so the two control operations go
+-- through files in garrysmod/data: the relay publishes the voice list, and picks up
+-- key changes the panel writes. Audio is unaffected: sound.PlayURL is BASS, not the
+-- Lua HTTP shim.
+local VOICES_FILE  = "ainpc_relay_voices.json"
+local COMMAND_FILE = "ainpc_relay_command.json"
+
+local function readDataTable(name)
+    if not file.Exists(name, "DATA") then return nil end
+    local raw = file.Read(name, "DATA")
+    if not raw or raw == "" then return nil end
+    local parsed = AINPCS.SafeJSON(raw)
+    return istable(parsed) and parsed or nil
+end
 
 --- (status, error) — status is the parsed file with .age and .fresh added.
 function AINPCS.ReadRelayStatus()
@@ -308,6 +350,8 @@ function AINPCS.RelayHealth(callback)
                 -- that never stopped.
                 info.file_only = true
                 info.code = code
+                info.local_blocked = isstring(code)
+                    and string.find(string.lower(code), "local resources", 1, true) ~= nil
                 callback(info, code, raw)
             end
         end)
@@ -354,13 +398,45 @@ function AINPCS.RelayHealth(callback)
     attempt(1)
 end
 
+--- Saves the Fish key. With a live relay this is a file the relay picks up; the
+--- panel then polls the status file for the relay's verdict, because the relay is
+--- the only side that can ask Fish Audio whether the key is real.
 function AINPCS.RelaySaveKey(key, callback)
-    relayCall(AINPCS.RelayBase(), "/config", "post", util.TableToJSON({ key = key }),
-        function(code, raw)
-            local parsed = AINPCS.SafeJSON(raw)
-            callback(code == 200 and istable(parsed), code or 0,
-                     istable(parsed) and parsed or { error = tostring(raw) })
-        end)
+    local status = AINPCS.ReadRelayStatus()
+
+    if not (status and status.fresh) then
+        -- No heartbeat to answer through, so a command file would sit unread.
+        relayCall(AINPCS.RelayBase(), "/config", "post", util.TableToJSON({ key = key }),
+            function(code, raw)
+                local parsed = AINPCS.SafeJSON(raw)
+                callback(code == 200 and istable(parsed), code or 0,
+                         istable(parsed) and parsed or { error = tostring(raw) })
+            end)
+        return
+    end
+
+    local id = tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
+    file.Write(COMMAND_FILE, util.TableToJSON({ op = "setkey", key = key, id = id }))
+
+    local timerName = "AINPC_RelayKeyPoll_" .. id
+    local attempts  = 0
+
+    -- The relay validates the key against Fish Audio before answering, and that
+    -- round trip can take several seconds on a rejection, so allow ~20s.
+    timer.Create(timerName, 0.25, 80, function()
+        attempts = attempts + 1
+
+        local current = AINPCS.ReadRelayStatus()
+        local result  = current and current.command_result
+
+        if istable(result) and tostring(result.id) == id then
+            timer.Remove(timerName)
+            callback(result.ok and true or false, result.ok and 200 or 0,
+                     { error = tostring(result.error or "") })
+        elseif attempts >= 80 then
+            callback(false, 0, { error = "the relay did not answer the key file - is its window still open?" })
+        end
+    end)
 end
 
 -- =============================================================================
@@ -392,6 +468,16 @@ concommand.Add("ainpc_voice_diag", function()
     local alt = alternateHost(configured)
     if alt and alt ~= configured then candidates[#candidates + 1] = alt end
 
+    local voices = readDataTable(VOICES_FILE)
+    if voices then
+        MsgN(string.format("  voice list file        = %s (%d voices)",
+            VOICES_FILE, istable(voices.voices) and #voices.voices or 0))
+    else
+        MsgN("  voice list file        = none (the relay publishes it)")
+    end
+
+    MsgN("  note                   = Garry's Mod blocks client HTTP to private networks unless launched with -allowlocalhttp")
+
     local pending = #candidates
     for _, base in ipairs(candidates) do
         relayCall(base, "/health", "get", nil, function(code, raw)
@@ -411,6 +497,36 @@ concommand.Add("ainpc_voice_diag", function()
             end
         end)
     end
+end)
+
+--- Which loopback URL spellings the game actually accepts. Useful because Garry's
+--- Mod rejects private-network destinations outright unless launched with
+--- -allowlocalhttp, and the fix is a launch option, not an addon setting.
+concommand.Add("ainpc_http_test", function()
+    local port = string.match(AINPCS.RelayConfiguredBase(), ":(%d+)") or "7171"
+
+    local candidates = {
+        "http://localhost:" .. port .. "/health",
+        "http://127.0.0.1:" .. port .. "/health",
+        "http://%31%32%37.0.0.1:" .. port .. "/health",   -- percent-escaped, older trick
+    }
+
+    MsgC(Color(90, 165, 255), "\n[AI NPCs] HTTP transport test (port " .. port .. ")\n")
+
+    for _, url in ipairs(candidates) do
+        HTTP({
+            url = url,
+            method = "get",
+            success = function(code)
+                MsgN(string.format("  %s  ->  HTTP %s", url, tostring(code)))
+            end,
+            failed = function(err)
+                MsgN(string.format("  %s  ->  refused: %s", url, tostring(err)))
+            end,
+        })
+    end
+
+    MsgN("  add -allowlocalhttp to the game's launch options to permit the first two.\n")
 end)
 
 -- =============================================================================

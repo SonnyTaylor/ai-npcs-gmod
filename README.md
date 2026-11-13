@@ -182,12 +182,18 @@ writes `garrysmod/data/ainpc_relay_status.json` every two seconds, and the addon
 reads that file. If the file is missing when the relay window is open, the relay
 could not find your `garrysmod/data` folder — its window says so on startup.
 
-**"voice service: up, but unreachable from the game"** — the relay is running (its
-heartbeat file is fresh) but the game's HTTP client cannot reach it. Everything the
-relay does needs that connection: voice search, voice playback and saving the Fish
-key. Restarting the relay will not help. Run `ainpc_voice_diag` in the console: it
-prints the status file's age and published URL plus the real result for each
-candidate address, which separates a firewall/AV block from a wrong port.
+**"voice service: ready (file mode)"** — normal, and not a problem. Garry's Mod
+refuses client HTTP requests to private networks (`127.0.0.1`, `localhost`,
+`192.168.…`) unless the game is launched with `-allowlocalhttp`. So the addon and
+the relay exchange the voice list and the Fish key through files in
+`garrysmod/data`, and keep the HTTP paths only as a fallback. Audio is unaffected:
+`sound.PlayURL` is a different subsystem. If you want the HTTP paths too, add
+`-allowlocalhttp` to the game's launch options and run `ainpc_http_test` to confirm.
+
+**"voice service: up, but unreachable from the game"** — the relay's heartbeat file
+is fresh, but an HTTP probe failed for some other reason (firewall, wrong port,
+something else on the port). `ainpc_voice_diag` prints the status file's age and
+published URL alongside the real result for each candidate address.
 
 **"I want the new interface"** — subscribe to Mantle (`3126986993`) and its
 Montserrat font (`2924839375`), then reopen the menu. Already subscribed and still

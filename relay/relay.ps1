@@ -89,6 +89,108 @@ function Get-Credits {
     return $script:CachedCredits
 }
 
+$VoicesPath  = if ($DataDir) { Join-Path $DataDir "ainpc_relay_voices.json" }  else { $null }
+$CommandPath = if ($DataDir) { Join-Path $DataDir "ainpc_relay_command.json" } else { $null }
+
+$script:VoicesAt      = [datetime]::MinValue
+$script:CommandResult = $null
+
+# Garry's Mod refuses client HTTP requests to private networks ("Requests to local
+# resources are not allowed") unless the game is launched with -allowlocalhttp. So
+# the two control operations the panel needs -- listing voices and saving the Fish
+# key -- cannot be HTTP at all. They go through files in garrysmod/data instead:
+# the relay publishes the voice list, and picks up key changes written by the panel.
+function Write-Voices([switch]$Force) {
+    if (-not $VoicesPath) { return }
+    if (-not $Force -and ((Get-Date) - $script:VoicesAt).TotalSeconds -lt 600) { return }
+
+    $script:VoicesAt = Get-Date
+
+    $sources = @()
+    $sources += @(Get-Presets)                 # pinned voices first: the list opens useful
+    if ($Config.fish_key) {
+        try { $sources += @(Get-FishVoices "" 200) }
+        catch { Write-Log "voice list unavailable: $($_.Exception.Message)" }
+    }
+
+    $all  = @()
+    $seen = @{}
+    foreach ($v in $sources) {
+        $name = "$($v.name)"
+        if (-not $name -or $seen.ContainsKey($name)) { continue }
+        $seen[$name] = $true
+        $all += [pscustomobject]@{ name = $name; label = "$($v.label)" }
+    }
+
+    try {
+        $json = ([ordered]@{
+            ok      = $true
+            updated = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+            voices  = $all
+        } | ConvertTo-Json -Compress -Depth 4)
+
+        $tmp = "$VoicesPath.tmp"
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -Force $tmp $VoicesPath
+        Write-Log ("voice list published ({0} voices)" -f $all.Count)
+    } catch {
+        Write-Log "could not publish the voice list: $($_.Exception.Message)"
+    }
+}
+
+function Set-FishKey([string]$key) {
+    $key = "$key".Trim()
+
+    if (-not $key.StartsWith("sk-fish-")) {
+        return @{ ok = $false; error = "that does not look like a Fish Audio key" }
+    }
+
+    $old = $Config.fish_key
+    $Config.fish_key = $key
+
+    try {
+        # /model is unauthenticated, so it cannot prove a key is valid.
+        Invoke-FishJson "/wallet/self/api-credit" | Out-Null
+        Save-Config $Config
+        $script:CreditsAt = [datetime]::MinValue      # the balance belongs to the new key
+        return @{ ok = $true; error = "" }
+    } catch {
+        $Config.fish_key = $old
+        return @{ ok = $false; error = "Fish rejected the key: $($_.Exception.Message)" }
+    }
+}
+
+function Invoke-CommandFile {
+    if (-not $CommandPath -or -not (Test-Path $CommandPath)) { return }
+
+    $cmd = $null
+    try { $cmd = Get-Content -Raw -Encoding UTF8 $CommandPath | ConvertFrom-Json } catch { }
+    Remove-Item -Force $CommandPath -ErrorAction SilentlyContinue
+
+    if (-not $cmd) { return }
+
+    $id     = "$($cmd.id)"
+    $result = @{ id = $id; ok = $false; error = "unknown command '$($cmd.op)'" }
+
+    switch ("$($cmd.op)") {
+        "setkey" {
+            $applied = Set-FishKey "$($cmd.key)"
+            $result  = @{ id = $id; ok = [bool]$applied.ok; error = "$($applied.error)" }
+
+            if ($applied.ok) {
+                Write-Log "key from the in-game panel: accepted"
+                Write-Voices -Force
+            } else {
+                Write-Log ("key from the in-game panel: rejected ({0})" -f $applied.error)
+            }
+        }
+    }
+
+    # The panel polls the status file for this, so publish it before returning.
+    $script:CommandResult = $result
+    Write-Status
+}
+
 function Write-Status {
     if (-not $StatusPath) { return }
 
@@ -103,6 +205,7 @@ function Write-Status {
         tts_model = $FishModel
         credits   = Get-Credits
         heartbeat = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        command_result = $script:CommandResult
     }
 
     try {
@@ -354,6 +457,7 @@ if ($StatusPath) {
 }
 
 Write-Status
+Write-Voices
 
 try {
 $asyncContext = $listener.BeginGetContext($null, $null)
@@ -361,8 +465,10 @@ $asyncContext = $listener.BeginGetContext($null, $null)
 while ($listener.IsListening) {
     # Idle heartbeat. BeginGetContext keeps the socket owned by HTTP.sys, so the
     # status file has to be refreshed from here rather than from a timer.
-    if (-not $asyncContext.AsyncWaitHandle.WaitOne(2000)) {
+    if (-not $asyncContext.AsyncWaitHandle.WaitOne(1500)) {
+        Invoke-CommandFile
         Write-Status
+        Write-Voices
         continue
     }
 
@@ -371,6 +477,8 @@ while ($listener.IsListening) {
     } catch { break }
 
     $asyncContext = $listener.BeginGetContext($null, $null)
+
+    Invoke-CommandFile
 
     $req = $ctx.Request
     $path = $req.Url.AbsolutePath.TrimEnd("/")
@@ -445,21 +553,13 @@ while ($listener.IsListening) {
                 }
                 $key = $key.Trim()
 
-                if (-not $key.StartsWith("sk-fish-")) {
-                    Send-Json $ctx 400 @{ ok = $false; error = "that does not look like a Fish Audio key" }; continue
-                }
-
-                $old = $Config.fish_key
-                $Config.fish_key = $key
-                try {
-                    # /model is unauthenticated, so it cannot prove a key is valid.
-                    Invoke-FishJson "/wallet/self/api-credit" | Out-Null
-                    Save-Config $Config
+                $applied = Set-FishKey $key
+                if ($applied.ok) {
+                    Write-Voices -Force
                     Write-Log "key saved and validated"
                     Send-Json $ctx 200 @{ ok = $true }
-                } catch {
-                    $Config.fish_key = $old
-                    Send-Json $ctx 400 @{ ok = $false; error = "Fish rejected the key: $($_.Exception.Message)" }
+                } else {
+                    Send-Json $ctx 400 @{ ok = $false; error = $applied.error }
                 }
             }
 

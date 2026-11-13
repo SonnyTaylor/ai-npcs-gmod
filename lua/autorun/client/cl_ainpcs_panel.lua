@@ -195,6 +195,10 @@ function AINPCS.OpenClassic()
                     pill:SetText("voice service: NOT running")
                     pillSub:SetText("tried " .. tostring(AINPCS._relayTried or AINPCS.RelayBase()))
                 end
+            elseif info.local_blocked then
+                pill:SetTextColor(C.good)
+                pill:SetText("voice service: ready (file mode)")
+                pillSub:SetText("Garry's Mod blocks HTTP to loopback; voices and the key use files")
             elseif info.file_only then
                 pill:SetTextColor(C.warn)
                 pill:SetText("voice service: up, but unreachable from the game")

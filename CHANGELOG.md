@@ -32,6 +32,36 @@ rendering, and the radial action menu is not built yet. See `MANTLE_PLAN.md` for
 the remaining phases.
 
 
+### Fixed — the actual root cause: Garry's Mod blocks HTTP to loopback
+
+`Requests to local resources are not allowed`. That is the engine refusing the
+request before it leaves the process — not the relay, not Windows, not the host
+name. Garry's Mod blocks client-side HTTP to private networks (`127.0.0.1`,
+`localhost`, `10.`, `172.16.`, `192.168.`) unless the game is launched with
+**`-allowlocalhttp`**. No amount of host spelling or port juggling was ever going
+to fix it, and `/voices` and `/config` could never have worked.
+
+Both control operations now travel as files in `garrysmod/data`, which needs no
+network and no launch options:
+
+| Operation | Before | Now |
+|---|---|---|
+| Voice list | `GET /voices` | the relay publishes `ainpc_relay_voices.json` (pinned voices first, then the library, refreshed every 10 min); the panel filters it locally |
+| Save Fish key | `POST /config` | the panel writes `ainpc_relay_command.json`; the relay validates the key against Fish Audio and publishes the verdict in its heartbeat file, which the panel polls |
+
+Detection was already file-based, so nothing about "is it running" depends on the
+network now.
+
+**Audio is unaffected.** `sound.PlayURL` is BASS, not the Lua HTTP shim, so it is
+not subject to the private-network block — cloned voices still stream from the
+relay. If you *do* add `-allowlocalhttp` to the launch options, the HTTP paths
+become available again and are used as a fallback.
+
+The status pill gained a matching state: **"ready (file mode)"**, green, for the
+normal default install where HTTP is refused but everything else works.
+`ainpc_http_test` tries the candidate URL spellings and reports which the engine
+accepts, so this is one command away from being proved again on any machine.
+
 ### Changed — the relay now says it is alive with a file, not a request
 
 Asking the game to prove the relay is up over HTTP was the wrong shape of
