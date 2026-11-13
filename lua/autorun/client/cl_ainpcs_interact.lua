@@ -389,6 +389,75 @@ function AINPCS.PreviewVoice(voiceId, sample)
     return true
 end
 
+
+-- =============================================================================
+-- Feasibility probe: can GMod play a sound it wrote to disk itself?
+--
+-- If this works, the Fish Audio POST could happen straight from the game and the
+-- external voice service would only be needed for exotic cases. It synthesises a
+-- short tone in Lua (no network, no key, no cost) and tries to play it back.
+-- =============================================================================
+
+local function le16(v)
+    v = math.floor(v) % 65536
+    return string.char(v % 256, math.floor(v / 256) % 256)
+end
+
+local function le32(v)
+    v = math.floor(v) % 4294967296
+    return string.char(v % 256, math.floor(v / 256) % 256,
+                       math.floor(v / 65536) % 256, math.floor(v / 16777216) % 256)
+end
+
+local function makeToneWav(seconds, hz, rate)
+    rate = rate or 22050
+    local n = math.floor(rate * (seconds or 0.6))
+    local out = {}
+    for i = 0, n - 1 do
+        local v = math.floor(math.sin(i * hz * 2 * math.pi / rate) * 11000)
+        if v < 0 then v = v + 65536 end
+        out[#out + 1] = string.char(v % 256, math.floor(v / 256) % 256)
+    end
+    local data = table.concat(out)
+    return "RIFF" .. le32(36 + #data) .. "WAVE" ..
+           "fmt " .. le32(16) .. le16(1) .. le16(1) .. le32(rate) ..
+           le32(rate * 2) .. le16(2) .. le16(16) ..
+           "data" .. le32(#data) .. data
+end
+
+concommand.Add("ainpc_probe_localaudio", function()
+    local wav = makeToneWav(0.6, 440)
+    file.Write("ainpc_probe.wav", wav)
+
+    local size = file.Size("ainpc_probe.wav", "DATA") or 0
+    print(string.format("[AI-NPCs] wrote %d bytes to data/ainpc_probe.wav", size))
+
+    local paths = { "data/ainpc_probe.wav", "ainpc_probe.wav" }
+    local function tryPath(i)
+        if i > #paths then
+            print("[AI-NPCs] local file playback NOT supported - the voice service stays required")
+            chat.AddText(Color(235, 120, 120), "[AI NPCs] ", Color(230, 230, 230),
+                "Local audio playback unsupported; the voice service is still required.")
+            return
+        end
+
+        local path = paths[i]
+        sound.PlayFile(path, "mono", function(snd, errId, errName)
+            if snd and snd.Play then
+                snd:SetVolume(0.2)
+                snd:Play()
+                print(string.format("[AI-NPCs] local file playback WORKS via '%s'", path))
+                chat.AddText(Color(130, 220, 150), "[AI NPCs] ",
+                    Color(230, 230, 230), "Local audio playback works (" .. path .. ").")
+            else
+                print(string.format("[AI-NPCs] '%s' failed: %s %s", path, tostring(errId), tostring(errName)))
+                tryPath(i + 1)
+            end
+        end)
+    end
+    tryPath(1)
+end)
+
 -- =============================================================================
 -- Spawn result
 -- =============================================================================

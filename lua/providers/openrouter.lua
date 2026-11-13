@@ -41,7 +41,7 @@ local function defaults(label, ctxMax, reasoning, tools)
         price_out = 0,
         max_tokens   = { min = 64, max = math.min(ctxMax or 8192, 32768), default = 2048 },
         temperature  = { min = 0, max = 2, default = 1 },
-        reasoning    = reasoning and { "low", "medium", "high" } or nil,
+        reasoning    = reasoning and { "none", "low", "medium", "high" } or nil,
         tool_support = tools == true,
     }
 end
@@ -79,6 +79,7 @@ if SERVER then
         }
         if npc.temperature ~= nil then body.temperature = npc.temperature end
         if npc.reasoning and npc.reasoning ~= "" then
+            -- "none" is a real OpenRouter value: reasoning off, first token sooner.
             body.reasoning = { effort = npc.reasoning }
         end
         return body
@@ -214,7 +215,7 @@ if SERVER then
                             tool_support = hasTools,
                         }
                         if hasReasoning then
-                            entry.reasoning = { "low", "medium", "high" }
+                            entry.reasoning = { "none", "low", "medium", "high" }
                         end
                         allModels[id] = entry
                         table.insert(allList, entry)

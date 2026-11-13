@@ -3,6 +3,22 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [2.5.0]
+
+### Added
+- **Reasoning can be switched off.** Reasoning models now offer "Off - fastest
+  reply" in the effort dropdown and it becomes the default, so the NPC starts
+  answering immediately instead of thinking first. Per provider:
+  OpenRouter sends `reasoning.effort: "none"` (a real value there), OpenAI is
+  mapped to `minimal` (the fastest it allows), Groq is mapped to `low` with hidden
+  thinking.
+- **Thinking bubble** above the NPC: a rounded "thinking ● ● ●" panel with an
+  animated dot cycle, readable at distance (replaces three floating dots).
+- `ainpc_probe_localaudio` console command: synthesises a test tone in Lua, writes
+  it to `data/`, and tries to play it back. This answers whether GMod can ever
+  play audio it fetched itself — if it can, the voice service can eventually be
+  dropped for Fish Audio too.
+
 ## [2.4.0]
 
 ### Added

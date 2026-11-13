@@ -20,7 +20,7 @@ provider.modelOrder = {
 local gpt5Settings = {
     max_tokens  = { min = 128, max = 8192, default = 2048 },
     temperature = { min = 1, max = 1, default = 1 },
-    reasoning   = { "minimal", "low", "medium", "high" },
+    reasoning   = { "none", "minimal", "low", "medium", "high" },
     tool_support = true,
 }
 
@@ -38,7 +38,7 @@ provider.models = {
     ["o4-mini"] = {
         max_tokens  = { min = 128, max = 8192, default = 2048 },
         temperature = { min = 1, max = 1, default = 1 },
-        reasoning   = { "minimal", "low", "medium", "high" },
+        reasoning   = { "none", "minimal", "low", "medium", "high" },
         tool_support = true,
     },
 }
@@ -60,7 +60,8 @@ if SERVER then
             max_completion_tokens = npc.max_tokens,
         }
         if npc.reasoning and npc.reasoning ~= "" then
-            body.reasoning_effort = npc.reasoning
+            -- OpenAI has no true "off"; minimal is the fastest it will go.
+            body.reasoning_effort = (npc.reasoning == "none") and "minimal" or npc.reasoning
         end
         if npc.temperature ~= nil then
             body.temperature = npc.temperature

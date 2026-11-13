@@ -26,7 +26,7 @@ end
 
 local function reasoningModel(ctxMax)
     local m = base(ctxMax)
-    m.reasoning = { "low", "medium", "high" }
+    m.reasoning = { "none", "low", "medium", "high" }
     return m
 end
 
@@ -58,7 +58,8 @@ if SERVER then
         }
         if npc.temperature ~= nil then body.temperature = npc.temperature end
         if npc.reasoning and npc.reasoning ~= "" then
-            body.reasoning_effort = npc.reasoning
+            -- Groq has no "off"; low + hidden thinking is the fast path.
+            body.reasoning_effort = (npc.reasoning == "none") and "low" or npc.reasoning
             body.reasoning_format = "hidden"
         end
 

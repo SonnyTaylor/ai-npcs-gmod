@@ -55,10 +55,20 @@ local function drawNameAbove(ent, name, thinking, speech)
         draw.SimpleText("AI NPC", "AINPC_Sub3D", 0, nameY + 40, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
         if thinking then
-            local phase = (RealTime() * 4) % (math.pi * 2)
+            -- A bubble instead of three floating dots: it reads as "this NPC is
+            -- working on an answer" from across the map.
+            local phase = (RealTime() * 3) % (math.pi * 2)
+            local boxW, boxH = 420, 74
+            local boxY = nameY + 74
+
+            draw.RoundedBox(10, -boxW / 2, boxY, boxW, boxH, Color(18, 18, 22, 200))
+            draw.SimpleText("thinking", "AINPC_Bubble", -70, boxY + boxH / 2,
+                Color(255, 220, 130, 230), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+
             for i = 0, 2 do
-                local alpha = math.floor(((math.sin(phase + i * 0.6) + 1) / 2) * 255)
-                draw.SimpleText("●", "AINPC_Sub3D", (i - 1) * 28, nameY + 90, Color(255, 220, 130, alpha), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+                local alpha = math.floor(((math.sin(phase + i * 0.7) + 1) / 2) * 255)
+                draw.SimpleText("●", "AINPC_Sub3D", 30 + i * 34, boxY + boxH / 2,
+                    Color(255, 220, 130, alpha), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
             end
         end
     cam.End3D2D()
