@@ -127,6 +127,15 @@ function UI.StatusPill(parent, width)
                 self.title:SetText("voice service: NOT running")
                 self.sub:SetText("tried " .. tostring(AINPCS._relayTried or AINPCS.RelayBase()))
             end
+        elseif info.file_only then
+            -- The relay's heartbeat file says it is up, but the game's own HTTP
+            -- client could not reach it. That is a firewall/sandbox problem, not a
+            -- "start the relay" problem, and the message says so.
+            self.dot._color = UI.sem.warn
+            self.title:SetText("voice service: up, but unreachable from the game")
+            self.sub:SetText(string.format(
+                "status file is %ss old; HTTP said %s — voice search and playback will fail",
+                tostring(info.age), tostring(info.code)))
         elseif info.unparsed then
             -- 200 with a body we cannot parse: reachable, not broken.
             self.dot._color = UI.sem.warn

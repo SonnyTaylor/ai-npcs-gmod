@@ -176,13 +176,18 @@ If you're not using the Workshop:
 
 **Pressing E doesn't open the chat window** — Make sure you're within ~140 units of the NPC and that it has the golden nametag above its head (if not, it's a regular NPC, not an AI one).
 
-**"voice service: NOT running" / "unreachable (HTTP 400)"** — the relay is up but
-the addon is asking for the wrong host. The PowerShell relay registers a
-`localhost` listener and Windows (HTTP.sys) rejects the `127.0.0.1` spelling before
-the relay ever sees it. The addon now tries both, but if it still fails run
-`ainpc_voice_diag` in the console: it prints the configured and effective address
-plus the real result for each candidate, which separates "wrong host" from "wrong
-port" from "something else is using the port".
+**"voice service: NOT running"** — nothing is listening. Start `relay/start.bat` and
+leave the window open. The panel no longer guesses this over the network: the relay
+writes `garrysmod/data/ainpc_relay_status.json` every two seconds, and the addon
+reads that file. If the file is missing when the relay window is open, the relay
+could not find your `garrysmod/data` folder — its window says so on startup.
+
+**"voice service: up, but unreachable from the game"** — the relay is running (its
+heartbeat file is fresh) but the game's HTTP client cannot reach it. Everything the
+relay does needs that connection: voice search, voice playback and saving the Fish
+key. Restarting the relay will not help. Run `ainpc_voice_diag` in the console: it
+prints the status file's age and published URL plus the real result for each
+candidate address, which separates a firewall/AV block from a wrong port.
 
 **"I want the new interface"** — subscribe to Mantle (`3126986993`) and its
 Montserrat font (`2924839375`), then reopen the menu. Already subscribed and still

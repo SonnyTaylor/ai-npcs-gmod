@@ -250,7 +250,72 @@ end
 ---   info = the health payload, or { unparsed = true } when something answered 200
 ---          with a body that is not our JSON, or nil when nothing answered at all.
 ---   code = HTTP status (number) or the transport error (string).
+
+-- The relay runs on this machine and publishes a heartbeat file next to the game's
+-- data. Reading it is how "is the relay running?" is answered now: no network, no
+-- host-name guessing, and it carries the exact URL the relay bound.
+local STATUS_FILE  = "ainpc_relay_status.json"
+local STATUS_FRESH = 20      -- seconds; the relay rewrites it every 2s while idle
+
+--- (status, error) — status is the parsed file with .age and .fresh added.
+function AINPCS.ReadRelayStatus()
+    if not file.Exists(STATUS_FILE, "DATA") then return nil, "no status file" end
+
+    local raw = file.Read(STATUS_FILE, "DATA")
+    if not raw or raw == "" then return nil, "empty status file" end
+
+    local parsed = AINPCS.SafeJSON(raw)
+    if not istable(parsed) then return nil, "unreadable status file" end
+
+    local beat = tonumber(parsed.heartbeat)
+    parsed.age = beat and (os.time() - beat) or nil
+    parsed.fresh = parsed.age ~= nil and math.abs(parsed.age) <= STATUS_FRESH
+
+    return parsed
+end
+
 function AINPCS.RelayHealth(callback)
+    local status = AINPCS.ReadRelayStatus()
+
+    if status and status.fresh then
+        -- The file proves the process is alive and tells us which URL it bound, so
+        -- the localhost/127.0.0.1 question never comes up.
+        if isstring(status.url) and status.url ~= "" then
+            AINPCS._relayBase = (string.gsub(status.url, "/+$", ""))
+        end
+
+        AINPCS._relayTried = AINPCS.RelayBase()
+
+        local info = {
+            ok        = true,
+            key_set   = status.key_set,
+            credits   = status.credits,
+            presets   = status.presets,
+            tts_model = status.tts_model,
+            from_file = true,
+            age       = status.age,
+        }
+
+        -- Still confirm the HTTP path: /voices and /tts need it, and the file only
+        -- proves the process exists, not that the game can talk to it.
+        relayCall(AINPCS.RelayBase(), "/health", "get", nil, function(code, raw)
+            local parsed = AINPCS.SafeJSON(raw)
+            if code == 200 and istable(parsed) then
+                callback(parsed, 200, raw)
+            else
+                -- Alive but unreachable from the game. The file tells us it is up;
+                -- saying "not running" here would send people restarting a service
+                -- that never stopped.
+                info.file_only = true
+                info.code = code
+                callback(info, code, raw)
+            end
+        end)
+        return
+    end
+
+    -- No fresh file: the relay is not running, or it is an older build without the
+    -- heartbeat. Fall back to probing both spellings over HTTP.
     local primary = AINPCS.RelayConfiguredBase()
     local candidates = { primary }
 
@@ -314,6 +379,14 @@ concommand.Add("ainpc_voice_diag", function()
     MsgN("  AINPCVoiceRelay (srv)  = ", string.format("%q", GetGlobalString("AINPCVoiceRelay", "") or ""))
     MsgN("  configured base        = ", configured)
     MsgN("  effective base         = ", AINPCS.RelayBase())
+
+    local status, why = AINPCS.ReadRelayStatus()
+    if status then
+        MsgN(string.format("  status file            = %s (age %ss, fresh=%s, url=%s)",
+            STATUS_FILE, tostring(status.age), tostring(status.fresh), tostring(status.url)))
+    else
+        MsgN("  status file            = none (" .. tostring(why) .. ")")
+    end
 
     local candidates = { configured }
     local alt = alternateHost(configured)

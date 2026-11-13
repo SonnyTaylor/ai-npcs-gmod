@@ -49,6 +49,57 @@ VOICE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+# The in-game client reads this file instead of asking over HTTP whether we are
+# running: no network, no host-name guessing (Windows answers 400 for the "wrong"
+# spelling of loopback when an HttpListener is involved), and it can carry the URL
+# we actually bound. Mirrors relay.ps1.
+#   <garrysmod>/data/ainpc_relay_status.json
+STATUS_FILE = os.path.join(HERE, "..", "..", "..", "data", "ainpc_relay_status.json")
+SERVER_URL = ""      # filled in by main() once the port is known
+
+
+def data_dir_available():
+    return os.path.isdir(os.path.dirname(os.path.abspath(STATUS_FILE)))
+
+
+def write_status(url=None, model=None):
+    """Best-effort heartbeat. Never raises: a missing data dir is not fatal."""
+    if not data_dir_available():
+        return
+    try:
+        payload = {
+            "ok": True,
+            "engine": "python",
+            "url": url or "",
+            "port": PORT,
+            "pid": os.getpid(),
+            "key_set": bool(CONFIG.key),
+            "presets": len(CONFIG.data.get("presets", [])),
+            "tts_model": model or FISH_TTS_MODEL,
+            "credits": credits(),
+            "heartbeat": int(time.time()),
+        }
+        tmp = STATUS_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, separators=(",", ":"))
+        os.replace(tmp, STATUS_FILE)
+    except OSError:
+        pass
+
+
+def clear_status():
+    try:
+        os.remove(STATUS_FILE)
+    except OSError:
+        pass
+
+
+def heartbeat_loop(url):
+    """Refresh the status file while the server is idle."""
+    while True:
+        write_status(url)
+        time.sleep(2.0)
+
 
 # ----------------------------------------------------------------------------- config
 
@@ -66,7 +117,11 @@ class Config:
 
     def _load(self):
         try:
-            with open(self.path, "r", encoding="utf-8") as fh:
+            # utf-8-sig: relay.ps1 writes this file with a BOM, and a plain
+            # utf-8 read rejects it ("Unexpected UTF-8 BOM"), which silently
+            # left the Python relay reporting key_set=false on a config the
+            # PowerShell relay had just written.
+            with open(self.path, "r", encoding="utf-8-sig") as fh:
                 disk = json.load(fh)
             if isinstance(disk, dict):
                 for k in ("fish_key", "default_voice"):
@@ -480,6 +535,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_html(200, setup_page())
 
         if route == "/health":
+            write_status(SERVER_URL)
             return self.send_json(200, {
                 "ok": True,
                 "key_set": bool(CONFIG.key),
@@ -547,6 +603,8 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(min(length, 8192)) if length else b""
 
         if route == "/config":
+            # key_set changes here; republish so the in-game pill updates at once.
+            write_status(SERVER_URL)
             key = ""
             ctype = (self.headers.get("Content-Type") or "").lower()
             if "application/json" in ctype:
@@ -641,7 +699,24 @@ def main():
         log("WARNING: bound to %s — anyone who can reach this port can spend your Fish credits" % HOST)
 
     log("listening on http://%s:%d  (key %s)" % (HOST, PORT, "loaded" if CONFIG.key else "missing"))
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+
+    global SERVER_URL
+    SERVER_URL = "http://%s:%d" % (HOST, PORT)
+
+    if data_dir_available():
+        log("status file: %s" % os.path.abspath(STATUS_FILE))
+    else:
+        log("no garrysmod/data directory found - the game will fall back to HTTP detection")
+
+    write_status(SERVER_URL)
+    threading.Thread(target=heartbeat_loop, args=(SERVER_URL,), daemon=True).start()
+
+    try:
+        ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        clear_status()
 
 
 if __name__ == "__main__":

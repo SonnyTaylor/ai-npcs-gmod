@@ -32,6 +32,42 @@ rendering, and the radial action menu is not built yet. See `MANTLE_PLAN.md` for
 the remaining phases.
 
 
+### Changed — the relay now says it is alive with a file, not a request
+
+Asking the game to prove the relay is up over HTTP was the wrong shape of
+question: on Windows an `HttpListener` is served by HTTP.sys (which 400s any
+spelling of the address other than the one it registered), and a local firewall can
+block the loopback round trip entirely, so "not running" was reported for a service
+that was healthy.
+
+Both relays now publish `garrysmod/data/ainpc_relay_status.json` and refresh it
+every two seconds while idle:
+
+```json
+{"ok":true,"engine":"powershell","url":"http://localhost:7171","port":7171,
+ "key_set":true,"presets":10,"tts_model":"s2.1-pro-free","credits":0,
+ "heartbeat":1794534308}
+```
+
+The client reads it with `file.Read` — no network, no host-name guessing — treats a
+heartbeat older than 20 seconds as "not running", and adopts the published `url`
+for `/voices`, `/tts` and `/config`. The relay removes the file when its window
+closes.
+
+A single `HTTP` probe still runs alongside it, because `/voices` and `/tts` need
+working HTTP. When the file says the relay is up but the probe fails, the panel now
+says **"up, but unreachable from the game"** instead of "not running" — that is a
+firewall problem, and restarting the relay will never fix it.
+
+`ainpc_voice_diag` prints the status file's age and published URL alongside the HTTP
+results.
+
+### Fixed — the Python relay ignored the PowerShell relay's config
+
+`relay.ps1` writes `config.json` with a UTF-8 BOM; `server.py` read it as plain
+`utf-8`, rejected it, and reported `key_set: false` on a key that was configured.
+It reads with `utf-8-sig` now.
+
 ### Fixed — "voice service: NOT running" while the service is running
 
 The relay (`relay/relay.ps1`) creates a .NET `HttpListener`, which on Windows is

@@ -41,6 +41,80 @@ function Write-Log($msg) {
     Write-Host ("[voice] {0}" -f $msg) -ForegroundColor DarkGray
 }
 
+# ------------------------------------------------------------ status file ----
+#
+# Asking the game "is the relay up?" over HTTP turned out to be unreliable on
+# Windows, for reasons that have nothing to do with the relay: an HttpListener is
+# served by HTTP.sys, which matches prefixes against the Host header and answers
+# 400 Invalid Hostname for any other spelling of the same loopback address, and a
+# local firewall can block the round trip outright. For a relay that runs on the
+# same machine as the game there is a better channel: a file.
+#
+# The client reads <garrysmod>/data/ainpc_relay_status.json with file.Read, so
+# detection uses no network at all, and the relay can publish the exact URL it
+# actually bound instead of the client guessing between localhost and 127.0.0.1.
+
+function Get-DataDirectory {
+    foreach ($candidate in @((Join-Path $Root "..\..\..\data"), (Join-Path $Root "..\..\data"))) {
+        if (Test-Path $candidate) { return (Resolve-Path $candidate).Path }
+    }
+
+    # Installed somewhere unusual: walk up looking for a garrysmod root.
+    $dir = Get-Item $Root
+    while ($dir) {
+        if ((Test-Path (Join-Path $dir.FullName "data")) -and (Test-Path (Join-Path $dir.FullName "addons"))) {
+            return (Join-Path $dir.FullName "data")
+        }
+        $dir = $dir.Parent
+    }
+
+    return $null
+}
+
+$DataDir    = Get-DataDirectory
+$StatusPath = if ($DataDir) { Join-Path $DataDir "ainpc_relay_status.json" } else { $null }
+
+# Fish Audio is only asked for the credit balance once a minute: the heartbeat
+# writes every couple of seconds and must never block on the network.
+$script:CachedCredits = $null
+$script:CreditsAt     = [datetime]::MinValue
+
+function Get-Credits {
+    if (((Get-Date) - $script:CreditsAt).TotalSeconds -lt 60) { return $script:CachedCredits }
+
+    $script:CreditsAt = Get-Date
+    try { $script:CachedCredits = [double](Invoke-FishJson "/wallet/self/api-credit").credit }
+    catch { $script:CachedCredits = $null }
+
+    return $script:CachedCredits
+}
+
+function Write-Status {
+    if (-not $StatusPath) { return }
+
+    $status = [ordered]@{
+        ok        = $true
+        engine    = "powershell"
+        url       = $Script:StatusUrl
+        port      = $Port
+        pid       = $PID
+        key_set   = [bool]$Config.fish_key
+        presets   = @(Get-Presets).Count
+        tts_model = $FishModel
+        credits   = Get-Credits
+        heartbeat = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    }
+
+    try {
+        $json = $status | ConvertTo-Json -Compress -Depth 4
+        $tmp  = "$StatusPath.tmp"
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        Move-Item -Force $tmp $StatusPath
+    } catch {
+        Write-Log "could not write the status file: $($_.Exception.Message)"
+    }
+}
+
 # ---------------------------------------------------------------- config -----
 function Load-Config {
     $cfg = @{ fish_key = ""; presets = @(); default_voice = "" }
@@ -269,13 +343,34 @@ if (-not $listener) {
     exit 1
 }
 
+$Script:StatusUrl = ($prefix -split ",")[0].Trim().TrimEnd("/")
+
 Write-Log "listening on $prefix"
 Write-Log ("Fish key: " + $(if ($Config.fish_key) { "configured" } else { "NOT configured - paste one at $prefix" }))
+if ($StatusPath) {
+    Write-Log "status file: $StatusPath"
+} else {
+    Write-Log "no garrysmod/data directory found - the game will fall back to HTTP detection"
+}
+
+Write-Status
+
+try {
+$asyncContext = $listener.BeginGetContext($null, $null)
 
 while ($listener.IsListening) {
+    # Idle heartbeat. BeginGetContext keeps the socket owned by HTTP.sys, so the
+    # status file has to be refreshed from here rather than from a timer.
+    if (-not $asyncContext.AsyncWaitHandle.WaitOne(2000)) {
+        Write-Status
+        continue
+    }
+
     try {
-        $ctx = $listener.GetContext()
+        $ctx = $listener.EndGetContext($asyncContext)
     } catch { break }
+
+    $asyncContext = $listener.BeginGetContext($null, $null)
 
     $req = $ctx.Request
     $path = $req.Url.AbsolutePath.TrimEnd("/")
@@ -293,7 +388,8 @@ while ($listener.IsListening) {
                     ok = $true
                     key_set = [bool]$Config.fish_key
                     presets = @(Get-Presets).Count
-                    credits = $(try { [double](Invoke-FishJson "/wallet/self/api-credit").credit } catch { $null })
+                    credits = Get-Credits
+                    url = $Script:StatusUrl
                     tts_model = $FishModel
                     engine = "powershell"
                 }
@@ -387,6 +483,7 @@ while ($listener.IsListening) {
                 if ($remove) {
                     $Config.presets = @($Config.presets | Where-Object { "$($_.id)" -ne $id })
                     Save-Config $Config
+                    Write-Status
                     Send-Json $ctx 200 @{ ok = $true; presets = @(Get-Presets) }
                 } else {
                     try {
@@ -407,3 +504,9 @@ while ($listener.IsListening) {
         try { Send-Json $ctx 500 @{ error = "$($_.Exception.Message)" } } catch { }
     }
 }
+} finally {
+    # Drop the status file so the game stops believing the relay is up the moment
+    # this window closes.
+    if ($StatusPath) { Remove-Item -Force $StatusPath -ErrorAction SilentlyContinue }
+}
+

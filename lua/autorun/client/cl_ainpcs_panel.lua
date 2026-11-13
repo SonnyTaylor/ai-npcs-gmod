@@ -195,6 +195,12 @@ function AINPCS.OpenClassic()
                     pill:SetText("voice service: NOT running")
                     pillSub:SetText("tried " .. tostring(AINPCS._relayTried or AINPCS.RelayBase()))
                 end
+            elseif info.file_only then
+                pill:SetTextColor(C.warn)
+                pill:SetText("voice service: up, but unreachable from the game")
+                pillSub:SetText(string.format(
+                    "status file is %ss old; HTTP said %s",
+                    tostring(info.age), tostring(info.code)))
             elseif info.unparsed then
                 pill:SetTextColor(C.warn)
                 pill:SetText("voice service: running, unreadable status")
