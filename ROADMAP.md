@@ -12,6 +12,29 @@ working where it genuinely does.
 
 ---
 
+## v4.0 — the interface (this update)
+
+The C menu becomes a real app instead of one scroll of controls. Spec and phase
+plan: [`MANTLE_PLAN.md`](MANTLE_PLAN.md).
+
+- [x] **Mantle as an optional backend.** Mantle is a separate Workshop addon and
+      Workshop does not install dependencies, so the v3.1 Derma panel stays as a
+      frozen fallback instead of becoming a hard requirement. Routed by
+      `AINPCS.UI.useMantle()` and overridable with `ainpc_ui 1|2`.
+- [x] **Library** as a sortable table with right-click Spawn / Edit / Delete.
+- [x] **Create** as a five-step wizard: identity, voice search, body, behaviour,
+      review, with a live 3D preview and Mantle's modal model picker.
+- [x] **Settings** rebuilt from Mantle controls, including the voice-service
+      status pill and a themed volume slider bound to `ainpc_voice_volume`.
+- [x] **Bug fixes found by using it**: the relay host mismatch (HTTP.sys rejects
+      `127.0.0.1` for a `localhost` listener), values not committing while typing,
+      and cloned voices being unplayable when the server relay convar is unset.
+- [ ] Chat window on `MantleFrame` + `MantleScrollPanel` with bubble styling.
+- [ ] Nametag, thinking bubble and toasts moved to RNDX.
+- [ ] Radial action menu on hold-E (`Mantle.ui.radial_menu`): talk, repeat last,
+      change voice, despawn. Needs two new server net messages.
+- [ ] Retire the classic panel once 4.0 has been on the Workshop for a while.
+
 ## v2.1 — "it actually works" (this update)
 
 ### Audio that exists, is positional, and follows the NPC

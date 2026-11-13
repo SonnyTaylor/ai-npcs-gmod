@@ -1,4 +1,4 @@
-# Steam Workshop Description — AI NPCs (v2.0)
+# Steam Workshop Description — AI NPCs (v4.0)
 
 Paste the block below into the Steam Workshop description field. It uses Steam's BBCode variants (`[h1]`, `[h2]`, `[h3]`, `[list]`, `[olist]`, `[b]`, `[i]`, `[url=...]`, `[hr]`).
 
@@ -7,6 +7,13 @@ Before you paste, upload a new screenshot/GIF showing the E-to-talk chat window 
 ---
 
 [h1]AI NPCs — talk to NPCs in Garry's Mod, for free[/h1]
+
+[h2]What's new in v4.0[/h2]
+[list]
+[*][b]A proper interface.[/b] The C menu is now a library of saved characters, a guided five-step maker with a live 3D body preview, and a settings page that is not a wall of controls. Built on [url=https://github.com/darkfated/mantle]Mantle[/url] — [b]optional[/b], subscribe to [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3126986993]Mantle[/url] and its [url=https://steamcommunity.com/sharedfiles/filedetails/?id=2924839375]Montserrat font[/url] to get it. Without them you get the old panel, which still works; nothing is a hard dependency.
+[*][b]Fixed: "voice service: NOT running" when it is running.[/b] Windows rejected the address the addon was using, which silently broke voice search, playback and key saving too. Fixed, and there is now a console command that says exactly what the addon sees.
+[*][b]Fixed: typed text disappearing.[/b] Names and descriptions commit as you type instead of only on Enter, so a field can no longer come back blank.
+[/list]
 
 Spawn an NPC with a custom personality and actually have a conversation with it. Supports multiple AI providers, including two with genuinely free tiers. The old hardcoded "free" API key was long-dead and never worked — v2.0 replaces it with a real onboarding flow that walks you through grabbing your own free key in about 30 seconds.
 

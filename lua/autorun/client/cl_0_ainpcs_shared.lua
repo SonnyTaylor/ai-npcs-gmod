@@ -154,25 +154,78 @@ end
 -- =============================================================================
 
 local cvRelay = CreateClientConVar("ainpc_voice_relay_url", "", true, false,
-    "Your own voice service address. Empty = server default / 127.0.0.1:7171")
+    "Your own voice service address. Empty = server default / http://localhost:7171")
 
-function AINPCS.RelayBase()
+-- localhost, not 127.0.0.1: the PowerShell relay binds a HttpListener prefix of
+-- "http://localhost:7171/", and HTTP.sys matches prefixes on the Host header. A
+-- request to 127.0.0.1 gets "400 Invalid Hostname" from Windows itself, which is
+-- indistinguishable from the service being down. hostname works for the Python
+-- relay too, so one default covers both backends.
+local DEFAULT_RELAY = "http://localhost:7171"
+
+--- Whatever the player/server asked for, before any probing.
+function AINPCS.RelayConfiguredBase()
     local url = cvRelay and cvRelay:GetString() or ""
     if url == "" then url = GetGlobalString("AINPCVoiceRelay", "") or "" end
-    if url == "" then url = "http://127.0.0.1:7171" end
+    if url == "" then url = DEFAULT_RELAY end
     return (string.gsub(url, "/+$", ""))
 end
 
-local function relayGet(path, callback)
-    HTTP({
-        url = AINPCS.RelayBase() .. path,
-        method = "get",
+--- Effective base: the configured one, unless a probe found the other spelling
+--- of the same host working.
+function AINPCS.RelayBase()
+    return AINPCS._relayBase or AINPCS.RelayConfiguredBase()
+end
+
+-- The convar is FCVAR_ARCHIVE, so a stale value from an older build outlives the
+-- default. Forget what a probe learned when the player changes it.
+cvars.AddChangeCallback("ainpc_voice_relay_url", function()
+    AINPCS._relayBase = nil
+end)
+
+--- The other spelling of the same loopback host. The PowerShell relay registers
+--- its HttpListener for "localhost" only, and HTTP.sys matches prefixes against the
+--- Host header, so http://127.0.0.1:7171 is answered by Windows itself with
+--- "400 Invalid Hostname" while the service is perfectly healthy. Both spellings
+--- mean this machine, so try both and remember which one answered.
+local function alternateHost(url)
+    if string.find(url, "//localhost", 1, true) then
+        return (string.gsub(url, "//localhost", "//127.0.0.1", 1))
+    end
+    if string.find(url, "//127.0.0.1", 1, true) then
+        return (string.gsub(url, "//127%.0%.0%.1", "//localhost", 1))
+    end
+    if string.find(url, "//[::1]", 1, true) then
+        return (string.gsub(url, "//[[]::1[]]", "//localhost", 1))
+    end
+    return nil
+end
+
+AINPCS.RelayAlternateHost = alternateHost
+
+--- Low-level call: callback(code, rawBody). code is a number on an HTTP response
+--- and a string when the request never completed.
+local function relayCall(base, path, method, body, callback)
+    local opts = {
+        url = base .. path,
+        method = method or "get",
         headers = { ["Accept"] = "application/json" },
-        success = function(code, body)
-            callback((code == 200) and AINPCS.SafeJSON(body or "") or nil, code)
-        end,
-        failed = function(err) callback(nil, tostring(err)) end,
-    })
+        success = function(code, response) callback(code, response or "") end,
+        failed = function(err) callback(tostring(err), "") end,
+    }
+
+    if body then
+        opts.type = "application/json"
+        opts.body = body
+    end
+
+    HTTP(opts)
+end
+
+local function relayGet(path, callback)
+    relayCall(AINPCS.RelayBase(), path, "get", nil, function(code, raw)
+        callback((code == 200) and AINPCS.SafeJSON(raw) or nil, code, raw)
+    end)
 end
 
 function AINPCS.RelayVoices(query, callback)
@@ -192,24 +245,100 @@ function AINPCS.RelayVoices(query, callback)
     end)
 end
 
+--- Probes /health on the configured base and, if that fails, on the other
+--- spelling of the same host. callback(info, code):
+---   info = the health payload, or { unparsed = true } when something answered 200
+---          with a body that is not our JSON, or nil when nothing answered at all.
+---   code = HTTP status (number) or the transport error (string).
 function AINPCS.RelayHealth(callback)
-    relayGet("/health", function(body) callback(istable(body) and body or nil) end)
+    local primary = AINPCS.RelayConfiguredBase()
+    local candidates = { primary }
+
+    local alt = alternateHost(primary)
+    if alt and alt ~= primary then candidates[#candidates + 1] = alt end
+
+    AINPCS._relayTried = table.concat(candidates, "  or  ")
+
+    local function attempt(index)
+        local base = candidates[index]
+        if not base then
+            AINPCS._relayBase = nil
+            callback(nil, nil, nil)
+            return
+        end
+
+        relayCall(base, "/health", "get", nil, function(code, raw)
+            if code == 200 then
+                local parsed = AINPCS.SafeJSON(raw)
+                AINPCS._relayBase = base
+
+                if istable(parsed) then
+                    callback(parsed, 200, raw)
+                else
+                    -- Something is answering on this port. Reporting "not running"
+                    -- here would be a lie; say reachable-but-unreadable instead.
+                    callback({ ok = true, unparsed = true, raw = raw }, 200, raw)
+                end
+                return
+            end
+
+            attempt(index + 1)
+        end)
+    end
+
+    attempt(1)
 end
 
 function AINPCS.RelaySaveKey(key, callback)
-    HTTP({
-        url = AINPCS.RelayBase() .. "/config",
-        method = "post",
-        type = "application/json",
-        headers = { ["Accept"] = "application/json" },
-        body = util.TableToJSON({ key = key }),
-        success = function(code, body)
-            callback(code == 200 and istable(AINPCS.SafeJSON(body or "")), code,
-                     AINPCS.SafeJSON(body or ""))
-        end,
-        failed = function(err) callback(false, 0, { error = tostring(err) }) end,
-    })
+    relayCall(AINPCS.RelayBase(), "/config", "post", util.TableToJSON({ key = key }),
+        function(code, raw)
+            local parsed = AINPCS.SafeJSON(raw)
+            callback(code == 200 and istable(parsed), code or 0,
+                     istable(parsed) and parsed or { error = tostring(raw) })
+        end)
 end
+
+-- =============================================================================
+-- Diagnostics
+--
+-- "the panel says the voice service is down but it is running" has exactly three
+-- causes -- wrong host spelling, wrong port, or something else squatting on the
+-- port -- and they look identical from inside the panel. This prints which one.
+-- =============================================================================
+
+concommand.Add("ainpc_voice_diag", function()
+    local configured = AINPCS.RelayConfiguredBase()
+
+    MsgC(Color(90, 165, 255), "\n[AI NPCs] voice relay diagnostics\n")
+    MsgN("  ainpc_voice_relay_url  = ", string.format("%q", cvRelay and cvRelay:GetString() or ""))
+    MsgN("  AINPCVoiceRelay (srv)  = ", string.format("%q", GetGlobalString("AINPCVoiceRelay", "") or ""))
+    MsgN("  configured base        = ", configured)
+    MsgN("  effective base         = ", AINPCS.RelayBase())
+
+    local candidates = { configured }
+    local alt = alternateHost(configured)
+    if alt and alt ~= configured then candidates[#candidates + 1] = alt end
+
+    local pending = #candidates
+    for _, base in ipairs(candidates) do
+        relayCall(base, "/health", "get", nil, function(code, raw)
+            if code == 200 then
+                MsgN(string.format("  %s  ->  HTTP 200, %d bytes, json=%s",
+                    base, #raw, tostring(istable(AINPCS.SafeJSON(raw)))))
+                MsgN("      ", string.sub(string.gsub(raw, "%s+", " "), 1, 180))
+            elseif type(code) == "number" then
+                MsgN(string.format("  %s  ->  HTTP %d  (something answered, but not the relay)", base, code))
+            else
+                MsgN(string.format("  %s  ->  no response  (%s)", base, tostring(code)))
+            end
+
+            pending = pending - 1
+            if pending == 0 then
+                MsgN("  nothing answering at all? check the relay window is open and the port matches.\n")
+            end
+        end)
+    end
+end)
 
 -- =============================================================================
 -- Model cache

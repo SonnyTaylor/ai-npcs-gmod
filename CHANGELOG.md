@@ -3,6 +3,77 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [4.0.0] — Mantle interface
+
+The C menu is now built on [Mantle](https://github.com/darkfated/mantle), a UI and
+renderer library for Garry's Mod. Mantle is a separate Workshop addon, and Workshop
+does not install dependencies, so the v3.1 Derma panel ships alongside it: the
+addon uses Mantle when it is present and falls back to the old panel otherwise.
+Nothing breaks for anyone who never installs it.
+
+### New — the interface
+
+- **Mantle panel** (`lua/autorun/client/cl_ainpcs_mantle_panel.lua`): frame, tabs,
+  Library as a sortable table with a right-click menu, the five-step Create wizard
+  with a live 3D body preview and Mantle's modal model picker, and the full
+  Settings form.
+- **Routing** in `cl_2_ainpcs_open.lua`: one `AINPCS.Open()` for the concommand,
+  the C-menu icon and the desktop icon. `AINPCS.OpenClassic()` is the v3.1 panel,
+  unchanged apart from bug fixes.
+- **`ainpc_ui`** (client, default `0` = auto): `1` forces the classic panel, `2`
+  forces Mantle. **`ainpc_ui_sfx`** (default `1`) controls interface click sounds.
+- Body picking uses NPC registry models, so the modal selector covers only classes
+  whose registry entry carries a `Model`; a full class table covers the rest.
+
+### Not in this release
+
+The chat window, the 3D nametag/thinking bubble and the toasts still use their v3
+rendering, and the radial action menu is not built yet. See `MANTLE_PLAN.md` for
+the remaining phases.
+
+
+### Fixed — "voice service: NOT running" while the service is running
+
+The relay (`relay/relay.ps1`) creates a .NET `HttpListener`, which on Windows is
+served by HTTP.sys. HTTP.sys matches listener prefixes against the request's
+**Host header**, and the relay only registered `http://localhost:7171/`. The addon
+requested `http://127.0.0.1:7171/health`, so Windows itself answered
+`400 Bad Request — Invalid Hostname` before PowerShell ever saw the request. That
+HTML error page parsed as nil, and the panel reported the service as down.
+
+Because the same base URL is used for `/voices`, `/tts` and `/config`, this broke
+voice search, playback and saving the Fish key too — not just the status line.
+
+- The client default is now `http://localhost:7171` (works for both the PowerShell
+  and Python relays).
+- `relay.ps1` additionally registers `127.0.0.1` and `[::1]` prefixes when Windows
+  permits it, falling back to the `localhost` prefix alone. An elevated `urlacl`
+  is needed to bind a raw IP, so the fallback is the normal case.
+- `AINPCS.RelayHealth` now passes the HTTP status through, and both panels
+  distinguish "nothing is listening" from "something answered but it is not the
+  relay", naming the wrong-host case explicitly.
+- The health probe tries the configured host and the other spelling of the same
+  loopback host, then remembers which one answered. A stale archived
+  `ainpc_voice_relay_url` pointing at `127.0.0.1` therefore repairs itself.
+- New console command `ainpc_voice_diag` prints the configured and effective base
+  plus the real result for each candidate host (HTTP status, byte count, whether
+  the body is JSON, and the transport error when nothing answered).
+- Cloned voices in `relay:` now fall back to the client's own relay address when
+  the server's `ainpc_voice_relay` convar is empty, which previously left
+  `V.relay` blank and made every character voice unplayable on a local relay.
+
+### Fixed — typed text disappearing from the character fields
+
+`DTextEntry.OnValueChange` only fires on Enter or on focus loss, and nothing in
+the addon ever called `SetUpdateOnType(true)`. A click on a button does not
+reliably move keyboard focus, so typing a name and going straight to Next could
+leave the draft empty: the step then rebuilt from that empty draft (the field
+looked wiped) and saving fell back to an unnamed "NPC".
+
+Every text field — name, description, voice search, provider key, Ollama
+hostname — now commits while you type. The settings file is written on a short
+debounce instead of once per keystroke.
+
 ## [3.0.0] — UI rebuild
 
 The old panel was one screen with every control on it: provider, model, tokens,

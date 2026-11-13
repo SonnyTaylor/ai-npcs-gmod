@@ -27,7 +27,7 @@ local CV_PROXIMITY     = CreateConVar("ainpc_proximity_chat",        "1", FCVAR_
 local CV_PROXIMITY_R   = CreateConVar("ainpc_proximity_range",       "250", FCVAR_ARCHIVE, "Max distance (units) for proximity chat auto-routing.")
 local CV_INTERACT_R    = CreateConVar("ainpc_interact_range",        "140", FCVAR_ARCHIVE, "Max distance (units) for pressing E to open the chat UI.")
 local CV_ALLOWED_TTS   = CreateConVar("ainpc_tts_allowed",           "1", FCVAR_ARCHIVE, "If 1, clients may enable TTS playback.")
-local CV_VOICE_RELAY   = CreateConVar("ainpc_voice_relay",           "",  FCVAR_ARCHIVE, "Base URL of the optional voice relay that serves cloned voices (e.g. http://127.0.0.1:7171).")
+local CV_VOICE_RELAY   = CreateConVar("ainpc_voice_relay",           "",  FCVAR_ARCHIVE, "Base URL of the optional voice relay that serves cloned voices (e.g. http://localhost:7171).")
 local CV_OR_REFRESH    = CreateConVar("ainpc_openrouter_autorefresh", "1", FCVAR_ARCHIVE, "If 1, periodically fetch the current OpenRouter free-model list.")
 
 -- Publish the relay address to clients so the "test voice" button can hit the same host.

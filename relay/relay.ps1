@@ -1,4 +1,4 @@
-<#
+﻿<#
     AI NPCs — voice service (Windows PowerShell, no installs required)
 
     Fish Audio's TTS is an HTTP POST that returns audio bytes, and Garry's Mod can
@@ -221,15 +221,49 @@ function Get-SetupPage {
 "@
 }
 
-$listener = New-Object System.Net.HttpListener
 $prefix = "http://${Host_}:$Port/"
-$listener.Prefixes.Add($prefix)
 
-try {
-    $listener.Start()
-} catch {
+# HttpListener prefixes are matched on the Host header by HTTP.sys, before the
+# request ever reaches this script. A listener registered for "localhost" answers
+# http://localhost:7171/ but rejects http://127.0.0.1:7171/ with "400 Invalid
+# Hostname" -- which looks exactly like "the service is not running" from inside
+# the game. So register both spellings when Windows lets us, and fall back to the
+# single localhost prefix when it does not (binding a raw IP normally needs an
+# elevated urlacl; "localhost" is the one prefix unelevated users may bind).
+function Start-Listener([string[]] $PrefixList) {
+    $l = New-Object System.Net.HttpListener
+    foreach ($p in $PrefixList) { $l.Prefixes.Add($p) }
+    try {
+        $l.Start()
+    } catch {
+        # A half-started listener can leave HTTP.sys registrations behind and
+        # block the fallback attempt, so release it before retrying.
+        $l.Close()
+        throw
+    }
+    return $l
+}
+
+$prefixSets = @(
+    @($prefix, "http://127.0.0.1:$Port/", "http://[::1]:$Port/"),
+    @($prefix, "http://127.0.0.1:$Port/"),
+    @($prefix)
+)
+
+$listener = $null
+foreach ($set in $prefixSets) {
+    try {
+        $listener = Start-Listener $set
+        $prefix = $set -join ", "
+        break
+    } catch {
+        $lastError = $_.Exception.Message
+    }
+}
+
+if (-not $listener) {
     Write-Host "Could not start on $prefix" -ForegroundColor Red
-    Write-Host "$($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "$lastError" -ForegroundColor Red
     Write-Host "Another copy may already be running." -ForegroundColor Yellow
     Start-Sleep -Seconds 6
     exit 1

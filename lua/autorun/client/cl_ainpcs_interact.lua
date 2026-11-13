@@ -275,13 +275,23 @@ local function voiceError(errId, errName)
     AINPCS.DebugPrint("[AI-NPCs] voice error " .. tostring(errId) .. ": " .. tostring(errName))
 end
 
+-- The server convar is empty by default, which used to leave V.relay == "" and
+-- silently make every cloned voice unplayable even when a local relay was up. Fall
+-- back to the client's own relay address, which also carries the probed host
+-- spelling (localhost vs 127.0.0.1).
+local function currentRelayURL()
+    local url = GetGlobalString("AINPCVoiceRelay", "") or ""
+    if url == "" and AINPCS.RelayBase then url = AINPCS.RelayBase() end
+    return url
+end
+
 net.Receive("AINPC_TTSPlay", function()
     local ent = net.ReadEntity()
     local voiceId = net.ReadString()
     local text = net.ReadString()
 
     if not IsValid(ent) then return end
-    Voices.SetRelay(GetGlobalString("AINPCVoiceRelay", "") or "")
+    Voices.SetRelay(currentRelayURL())
 
     local chunks = Voices.Split(text)
     if #chunks == 0 then return end
@@ -374,7 +384,7 @@ end)
 
 -- Used by the "Test voice" button in the config panel.
 function AINPCS.PreviewVoice(voiceId, sample)
-    Voices.SetRelay(GetGlobalString("AINPCVoiceRelay", "") or "")
+    Voices.SetRelay(currentRelayURL())
     local url = Voices.BuildURL(voiceId, sample or "Hello. This is what I sound like.")
     if not url then return false end
 

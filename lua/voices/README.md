@@ -5,7 +5,7 @@ anything that needs a key or a model lives in one small local service that **eac
 player runs themselves**, with **their own** Fish Audio key:
 
 ```
-ainpc_voice_relay_url "http://127.0.0.1:7171"
+ainpc_voice_relay_url "http://localhost:7171"
 ```
 
 Two implementations ship in `relay/`, same API:

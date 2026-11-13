@@ -4,6 +4,24 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 
 ![](https://img.shields.io/steam/subscriptions/3142705974?label=Steam%20Subscriptions&style=for-the-badge&logo=steam)
 
+## What's new in v4.0
+
+- **A new interface, built on Mantle.** The C menu is now a proper app: a sortable
+  library, a guided five-step character maker with a live 3D body preview, and a
+  settings page that is not a wall of controls. [Mantle](https://github.com/darkfated/mantle)
+  is a separate addon — if you do not install it, you keep the old panel. See
+  [Interface](#interface).
+- **Fixed: "voice service: NOT running" while the service was running.** The relay
+  answers `localhost` but Windows rejects `127.0.0.1` for it with `400 Invalid
+  Hostname`, and the addon asked for the latter. Voice search, playback and key
+  saving were all affected. The addon and the relay now accept either spelling,
+  and the health check remembers which one works.
+- **Fixed: typed text vanishing from the fields.** Values used to commit only on
+  Enter or focus loss, so a name typed and then followed by a click could be
+  dropped and the field rebuilt empty. Everything commits as you type now.
+- **`ainpc_voice_diag`** prints exactly what the addon sees when it asks the voice
+  service for its status.
+
 ## What's new in v2.1
 
 - **Voices actually work now.** The old default TTS provider (StreamElements) started returning `401`, so every NPC was silent. Voice playback is now built on engines that answer today, with 16 voices across 13 languages.
@@ -24,6 +42,30 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 - Fixed the crashes people were hitting (`pairs(nil)`, `attempt to index nil`, silent `/say` failures).
 - Rewritten Ollama support that actually honours `max_tokens` and `temperature`.
 - Added DeepSeek provider.
+
+## Interface
+
+The C menu has two implementations behind the same three pages — Library, Create,
+Settings:
+
+| | |
+|---|---|
+| **Mantle** (preferred) | Acrylic frame, real tabs, sortable tables, Mantle's modal model picker with a drag-to-rotate preview. Requires the free [Mantle](https://steamcommunity.com/sharedfiles/filedetails/?id=3126986993) addon ([source](https://github.com/darkfated/mantle)) plus its [Montserrat font](https://steamcommunity.com/sharedfiles/filedetails/?id=2924839375). |
+| **Classic** | The v3.1 Derma panel. Always available, no dependencies, frozen apart from bug fixes. |
+
+The addon uses Mantle when it is installed and falls back to the classic panel
+otherwise — Workshop does not install dependencies, so nothing breaks if you never
+install it. Both can be forced:
+
+```
+ainpc_ui 0        // auto: Mantle when installed (default)
+ainpc_ui 1        // classic Derma panel
+ainpc_ui 2        // Mantle, if present
+ainpc_ui_sfx 0    // silence interface click sounds
+```
+
+The chat window, the nametag/thinking bubble above an NPC and the toast messages
+are still drawn the v3 way and will move to Mantle in a later update.
 
 ## Quickstart
 
@@ -77,7 +119,7 @@ Character voices need a voice model service, and those cost money — so **you s
 3. In game: `C menu -> AI NPCs -> Quick spawn`, type a character name (`rick sanchez`), press **Find voice + name**. It fills in the voice and the NPC name.
 4. Your Fish key is pasted **inside the panel** (`Voice service -> Fish Audio API key -> Save key`). It is written to `relay/config.json` on your machine only.
 
-`ainpc_voice_relay_url` (client) points at your relay; it defaults to `http://127.0.0.1:7171`. Searching and listing voices is free — only generating audio spends credits. Each chunk of a line is cached on disk, so a repeated bark costs nothing the second time.
+`ainpc_voice_relay_url` (client) points at your relay; it defaults to `http://localhost:7171` (use `localhost`, not `127.0.0.1` — the PowerShell relay's listener is bound to the `localhost` prefix and Windows rejects the IP spelling with `400 Invalid Hostname`). Searching and listing voices is free — only generating audio spends credits. Each chunk of a line is cached on disk, so a repeated bark costs nothing the second time.
 
 `ainpc_voice_volume` (client) controls playback volume. "Test voice" in the panel previews the selected voice.
 
@@ -99,6 +141,15 @@ All of these are `FCVAR_ARCHIVE` so they persist across restarts.
 | `ainpc_openrouter_autorefresh` | 1 | Auto-fetch OpenRouter free models daily |
 | `ainpc_voice_relay` | `` (empty) | Server default for the voice relay (players can override with their own `ainpc_voice_relay_url`) |
 | `ainpc_voice_volume` | 1 | Client-side voice volume (0–1) |
+
+### Client convars
+
+| Convar | Default | Description |
+|---|---|---|
+| `ainpc_ui` | 0 | `0` auto (Mantle when installed), `1` classic panel, `2` Mantle |
+| `ainpc_ui_sfx` | 1 | Interface click sounds |
+| `ainpc_voice_relay_url` | `` (empty) | Your own voice service. Empty = server default, then `http://localhost:7171` |
+| `ainpc_voice_volume` | 1 | Voice volume (0–1) |
 
 ## Manual installation
 
@@ -124,6 +175,25 @@ If you're not using the Workshop:
 **I want an uncensored NPC for RP** — Use OpenRouter and pick the Venice Uncensored model from the dropdown, or run Ollama locally with an uncensored model like `dolphin-mixtral`.
 
 **Pressing E doesn't open the chat window** — Make sure you're within ~140 units of the NPC and that it has the golden nametag above its head (if not, it's a regular NPC, not an AI one).
+
+**"voice service: NOT running" / "unreachable (HTTP 400)"** — the relay is up but
+the addon is asking for the wrong host. The PowerShell relay registers a
+`localhost` listener and Windows (HTTP.sys) rejects the `127.0.0.1` spelling before
+the relay ever sees it. The addon now tries both, but if it still fails run
+`ainpc_voice_diag` in the console: it prints the configured and effective address
+plus the real result for each candidate, which separates "wrong host" from "wrong
+port" from "something else is using the port".
+
+**"I want the new interface"** — subscribe to Mantle (`3126986993`) and its
+Montserrat font (`2924839375`), then reopen the menu. Already subscribed and still
+seeing the old panel? `ainpc_ui 2` will tell you whether the addon can see Mantle
+at all. Nothing is broken either way: the classic panel is the fallback, not a
+lesser mode.
+
+**"`relay:` voices are silent but `google:` ones work"** — character voices are
+charged per character by Fish Audio, and the relay reports `credits` in its own
+window. Zero credit means every cloned line fails while the keyless Google/SAPI
+voices keep working.
 
 ## Contributing
 
