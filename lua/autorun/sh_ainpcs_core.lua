@@ -5,7 +5,7 @@
 ]]
 
 AINPCS = AINPCS or {}
-AINPCS.Version = "2.3.1"
+AINPCS.Version = "2.4.0"
 
 AINPCS.NetStrings = {
     "AINPC_SpawnRequest",

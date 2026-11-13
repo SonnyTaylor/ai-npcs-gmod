@@ -32,6 +32,32 @@ local function relayRequest(path, callback)
     })
 end
 
+local function relayPost(path, body, callback)
+    HTTP({
+        url = relayBase() .. path,
+        method = "post",
+        type = "application/json",
+        headers = { ["Accept"] = "application/json" },
+        body = util.TableToJSON(body or {}),
+        success = function(code, resp)
+            callback(code, AINPCS.SafeJSON(resp or ""))
+        end,
+        failed = function(err) callback(0, { error = tostring(err) }) end,
+    })
+end
+
+local function relayHealth(callback)
+    HTTP({
+        url = relayBase() .. "/health",
+        method = "get",
+        headers = { ["Accept"] = "application/json" },
+        success = function(code, body)
+            callback((code == 200) and AINPCS.SafeJSON(body or "") or nil, code)
+        end,
+        failed = function(err) callback(nil, tostring(err)) end,
+    })
+end
+
 local function registerRelayVoices(list)
     local added = 0
     for _, v in ipairs(list or {}) do
@@ -390,6 +416,23 @@ function AINPCS.OpenConfigPanel()
     local rightCol = vgui.Create("DScrollPanel", content)
     rightCol:Dock(FILL)
 
+    -- ---- Quick spawn: type a character, get voice + name -------------------
+    local quickSection = Section(middleCol, "Quick spawn")
+
+    local characterEntry = LabeledEntry(quickSection, "Character", "e.g. rick sanchez")
+
+    local findVoiceBtn = vgui.Create("DButton", quickSection)
+    findVoiceBtn:Dock(TOP)
+    findVoiceBtn:SetTall(26)
+    findVoiceBtn:DockMargin(0, 0, 0, 4)
+    findVoiceBtn:SetText("Find voice + name")
+
+    local voiceMatches = vgui.Create("DComboBox", quickSection)
+    voiceMatches:Dock(TOP)
+    voiceMatches:SetTall(26)
+    voiceMatches:DockMargin(0, 0, 0, 6)
+    voiceMatches:SetText("Matches appear here")
+
     -- ---- Provider section ----
     local providerSection = Section(middleCol, "Provider")
 
@@ -494,6 +537,12 @@ function AINPCS.OpenConfigPanel()
     npcClassLbl:SetFont("AINPC_Body")
     npcClassLbl:SetTextColor(labelColor)
 
+    local npcFilter = vgui.Create("DTextEntry", npcSection)
+    npcFilter:Dock(TOP)
+    npcFilter:SetTall(24)
+    npcFilter:DockMargin(0, 2, 0, 4)
+    npcFilter:SetPlaceholderText("Filter bodies (citizen, zombie, combine...)")
+
     local npcDropdown = vgui.Create("DComboBox", npcSection)
     npcDropdown:Dock(TOP)
     npcDropdown:SetTall(26)
@@ -501,13 +550,32 @@ function AINPCS.OpenConfigPanel()
 
     local npcRegistry = list.Get("NPC") or {}
     local npcIds = {}
-    for id, _ in pairs(npcRegistry) do table.insert(npcIds, id) end
+    for id in pairs(npcRegistry) do table.insert(npcIds, id) end
     table.sort(npcIds)
-    for _, id in ipairs(npcIds) do
-        local data = npcRegistry[id]
-        local label = (data and data.Name) or id
-        npcDropdown:AddChoice(label, id, id == Settings.npcClass)
+
+    local function fillNpcClasses(filterText)
+        filterText = string.lower(filterText or "")
+        npcDropdown:Clear()
+        local shown = 0
+        for _, id in ipairs(npcIds) do
+            local data = npcRegistry[id]
+            local label = (data and data.Name) or id
+            if filterText == "" or string.find(string.lower(label .. " " .. id), filterText, 1, true) then
+                npcDropdown:AddChoice(label, id, id == Settings.npcClass)
+                shown = shown + 1
+            end
+        end
+        if shown == 0 then
+            -- Never leave the body picker empty.
+            for _, id in ipairs(npcIds) do
+                local data = npcRegistry[id]
+                npcDropdown:AddChoice((data and data.Name) or id, id, id == Settings.npcClass)
+            end
+        end
     end
+    fillNpcClasses("")
+
+    npcFilter.OnValueChange = function(_, value) fillNpcClasses(value) end
 
     function npcDropdown:OnSelect(_, _, id)
         Settings.npcClass = id
@@ -515,6 +583,36 @@ function AINPCS.OpenConfigPanel()
         net.WriteString(id or "")
         net.SendToServer()
     end
+
+    -- ---- Voice service (right col) -----------------------------------------
+    local serviceSection = Section(rightCol, "Voice service")
+
+    local svcStatus = vgui.Create("DLabel", serviceSection)
+    svcStatus:Dock(TOP)
+    svcStatus:SetFont("AINPC_Small")
+    svcStatus:SetWrap(true)
+    svcStatus:SetTall(46)
+    svcStatus:DockMargin(0, 0, 0, 6)
+    svcStatus:SetTextColor(subColor)
+    svcStatus:SetText("Checking...")
+
+    local svcKeyEntry = vgui.Create("DTextEntry", serviceSection)
+    svcKeyEntry:Dock(TOP)
+    svcKeyEntry:SetTall(26)
+    svcKeyEntry:DockMargin(0, 2, 0, 4)
+    svcKeyEntry:SetPlaceholderText("Fish Audio API key (sk-fish-...)")
+
+    local svcSaveBtn = vgui.Create("DButton", serviceSection)
+    svcSaveBtn:Dock(TOP)
+    svcSaveBtn:SetTall(26)
+    svcSaveBtn:DockMargin(0, 0, 0, 4)
+    svcSaveBtn:SetText("Save key to voice service")
+
+    local svcSetupBtn = vgui.Create("DButton", serviceSection)
+    svcSetupBtn:Dock(TOP)
+    svcSetupBtn:SetTall(22)
+    svcSetupBtn:DockMargin(0, 0, 0, 8)
+    svcSetupBtn:SetText("Open voice library (pin voices)")
 
     -- ---- Settings section (right col) ----
     local settingsSection = Section(rightCol, "Settings")
@@ -697,6 +795,106 @@ function AINPCS.OpenConfigPanel()
         else
             statusLabel:SetTextColor(errColor)
             statusLabel:SetText(text .. "      —  API key required")
+        end
+    end
+
+    local function refreshServiceStatus()
+        svcStatus:SetText("Voice service: checking...")
+        relayHealth(function(info)
+            if not info then
+                svcStatus:SetTextColor(errColor)
+                svcStatus:SetText("NOT running. Double-click relay/start.bat, then reopen this panel. (" .. relayBase() .. ")")
+                return
+            end
+
+            local creditText
+            if type(info.credits) == "number" then
+                creditText = string.format("$%.2f credit", info.credits)
+            else
+                creditText = "credit unknown"
+            end
+
+            if info.key_set then
+                svcStatus:SetTextColor(okColor)
+                svcStatus:SetText("Running - key set - " .. creditText)
+            else
+                svcStatus:SetTextColor(errColor)
+                svcStatus:SetText("Running - no key yet, paste your Fish Audio key below")
+            end
+        end)
+    end
+
+    svcSaveBtn.DoClick = function()
+        local key = AINPCS.Trim(svcKeyEntry:GetValue() or "")
+        if key == "" then
+            AINPCS.PushToast("Paste your Fish Audio key first.", "info")
+            return
+        end
+
+        svcSaveBtn:SetText("Saving...")
+        relayPost("/config", { key = key }, function(code, resp)
+            svcSaveBtn:SetText("Save key to voice service")
+            if code == 200 and istable(resp) and resp.ok then
+                svcKeyEntry:SetText("")
+                AINPCS.PushToast("Key saved - voices are ready.", "success")
+            else
+                local why = (istable(resp) and resp.error) or ("HTTP " .. tostring(code))
+                AINPCS.PushToast("Key rejected: " .. tostring(why), "error")
+            end
+            refreshServiceStatus()
+        end)
+    end
+
+    svcSetupBtn.DoClick = function() gui.OpenURL(relayBase() .. "/") end
+
+    -- Character name -> voice + NPC name. No description needed: the model already
+    -- knows who "Rick Sanchez" is, and the system prompt tells it to act like them.
+    local function applyCharacterMatch(label, voiceId)
+        if not isstring(voiceId) or voiceId == "" then return end
+        label = isstring(label) and AINPCS.Trim(label) or voiceId
+
+        Voices.Register(voiceId, label)
+        fillVoiceDropdown(voiceId)
+        Settings.ttsVoice  = voiceId
+        Settings.enableTTS = true
+
+        nameEntry:SetText(label)
+        if AINPCS.IsBlank(personalityEntry:GetValue() or "") then
+            personalityEntry:SetText("You are " .. label .. ".")
+        end
+        refreshStatus()
+    end
+
+    local function runCharacterSearch()
+        local query = AINPCS.Trim(characterEntry:GetValue() or "")
+        if query == "" then
+            AINPCS.PushToast("Type a character name, e.g. rick sanchez", "info")
+            return
+        end
+
+        voiceMatches:SetText("Searching...")
+        relayRequest("/voices?q=" .. Voices.Encode(query) .. "&limit=8", function(voices)
+            voiceMatches:Clear()
+            if not voices or #voices == 0 then
+                voiceMatches:SetText("No match")
+                AINPCS.PushToast("No voice found for '" .. query .. "'. Is the voice service running with a key?", "error")
+                return
+            end
+
+            for _, v in ipairs(voices) do
+                voiceMatches:AddChoice(v.label, v.name, false)
+            end
+            voiceMatches:SetText(string.format("%d match%s - click to change", #voices, #voices == 1 and "" or "es"))
+            applyCharacterMatch(voices[1].label, "relay:" .. voices[1].name)
+        end)
+    end
+
+    findVoiceBtn.DoClick = runCharacterSearch
+    characterEntry.OnEnter  = runCharacterSearch
+
+    function voiceMatches:OnSelect(text, _, name)
+        if isstring(name) then
+            applyCharacterMatch(isstring(text) and text or name, "relay:" .. name)
         end
     end
 
@@ -894,7 +1092,11 @@ function AINPCS.OpenConfigPanel()
                 modelCustomEntry:SetText(Settings.model or "")
             end
             applyModelSettings(models[currentModelId])
+            AINPCS.DebugPrint(string.format("[AI-NPCs] models: %d visible, selected %s",
+                #visible, tostring(currentModelId)))
         else
+            AINPCS.DebugPrint(string.format("[AI-NPCs] models: nothing visible (order=%d, filter=%q, freeOnly=%s)",
+                #(order or {}), tostring(filter), tostring(freeOnly)))
             local allowCustom = p and p.allowCustomModel == true
             modelDropdown:SetVisible(false)
             modelCustomEntry:SetVisible(allowCustom)
@@ -984,12 +1186,14 @@ function AINPCS.OpenConfigPanel()
     end
 
     -- Give the section cards their real height (see FitSections).
-    local cards = { providerSection, modelSection, npcSection, settingsSection }
+    local cards = { quickSection, providerSection, modelSection, npcSection, serviceSection, settingsSection }
     timer.Simple(0,   function() FitSections(cards) end)
     timer.Simple(0.2, function() FitSections(cards) end)
 
     -- Initial state
     refreshKeyEntry()
+
+    refreshServiceStatus()
 
     local modelsOk, modelsErr = pcall(populateModels)
     if not modelsOk then
@@ -998,8 +1202,12 @@ function AINPCS.OpenConfigPanel()
     end
 
     local order, models = getModelMap(currentProviderId)
-    AINPCS.DebugPrint(string.format("[AI-NPCs] panel: provider=%s order=%d models=%d selected=%s",
-        tostring(currentProviderId), #order, #models, tostring(currentModelId)))
+    local modelKeyCount = 0
+    for _ in pairs(models) do modelKeyCount = modelKeyCount + 1 end
+    AINPCS.DebugPrint(string.format(
+        "[AI-NPCs] panel: provider=%s order=%d modelKeys=%d selected=%s freeOnly=%s",
+        tostring(currentProviderId), #order, modelKeyCount,
+        tostring(currentModelId), tostring(Settings.freeOnly)))
 
     -- Populate the voice picker with whatever the player's relay already knows.
     relayRequest("/voices?limit=40", function(voices)

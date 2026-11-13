@@ -72,13 +72,10 @@ Pick a voice per NPC in the spawn panel. The server decides which voice speaks, 
 
 Character voices need a voice model service, and those cost money — so **you supply your own key**. It is never bundled with the addon and never sent to a server you're playing on.
 
-1. Get a [Fish Audio](https://fish.audio) API key.
-2. Run the relay that ships in `relay/`:
-   ```
-   python relay/server.py
-   ```
-3. Open <http://127.0.0.1:7171>, paste your key, and pin the voices you want.
-4. In game, use **Voice → Search voices**: type `peter griffin`, or paste a model id, and pick a result. Pinned voices are already in the dropdown.
+1. Get a [Fish Audio](https://fish.audio) API key (and some credit — Fish charges per character).
+2. Double-click **`relay/start.bat`**. That's it: no Python, no installs. A small window opens and stays open while you play.
+3. In game: `C menu -> AI NPCs -> Quick spawn`, type a character name (`rick sanchez`), press **Find voice + name**. It fills in the voice and the NPC name.
+4. Your Fish key is pasted **inside the panel** (`Voice service -> Fish Audio API key -> Save key`). It is written to `relay/config.json` on your machine only.
 
 `ainpc_voice_relay_url` (client) points at your relay; it defaults to `http://127.0.0.1:7171`. Searching and listing voices is free — only generating audio spends credits. Each chunk of a line is cached on disk, so a repeated bark costs nothing the second time.
 

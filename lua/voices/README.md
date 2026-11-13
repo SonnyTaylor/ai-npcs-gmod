@@ -8,8 +8,11 @@ player runs themselves**, with **their own** Fish Audio key:
 ainpc_voice_relay_url "http://127.0.0.1:7171"
 ```
 
-A working implementation ships in [`relay/server.py`](../../relay/server.py)
-(Python 3 standard library only, no install step).
+Two implementations ship in `relay/`, same API:
+
+* **`relay/start.bat`** -> `relay.ps1`, Windows PowerShell. Double-click and done,
+  no installs. This is the one users should run.
+* `relay/server.py` — Python 3 standard library, for Linux/macOS or if you prefer it.
 
 Once that convar is set, the config panel grows a `relay:<name>` voice for every
 voice the relay advertises, and the audio still comes out of the NPC's mouth like

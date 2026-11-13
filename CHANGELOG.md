@@ -3,6 +3,31 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [2.4.0]
+
+### Added
+- **Quick spawn**: type a character (`rick sanchez`) -> *Find voice + name*. It
+  searches the Fish Audio library, sets that voice, names the NPC, and fills a
+  one-line description. No biography required: the system prompt now tells the
+  model to imitate a known character's speech from the name alone.
+- **Voice service card in the panel**: shows running / key set / remaining credit,
+  and lets you paste your Fish Audio key **inside the game** (it is POSTed to the
+  local service, never stored in GMod's settings).
+- **Body filter** for the NPC class dropdown (citizen, zombie, combine...).
+- `relay/start.bat` + `relay/relay.ps1`: the voice service no longer needs Python.
+  Double-click, done. Same API as `relay/server.py`.
+
+### Fixed
+- **No voice at all.** `IGModAudioChannel:IsPlaying` is missing in current GMod
+  builds, so the voice Think hook threw every frame (thousands of errors) and no
+  chunk ever advanced. Channel state now goes through a version-tolerant helper
+  (`IsPlaying` -> `GetState` -> `GetTime`/`GetLength`).
+- **Key validation accepted any string**: Fish's `/model` listing is
+  unauthenticated. Both relays now validate against `/wallet/self/api-credit`,
+  which 401s on a bad key, and report the remaining credit.
+- Better model diagnostics (`models: N visible, selected X` / `nothing visible
+  (order=N, filter=..., freeOnly=...)`) instead of a silent "no model selected".
+
 ## [2.3.1]
 
 ### Fixed

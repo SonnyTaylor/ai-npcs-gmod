@@ -239,8 +239,33 @@ local Players = {}     -- [entIndex] = { voice, chunks, nextIndex, snd, pending,
 local function stopVoice(idx)
     local p = Players[idx]
     if not p then return end
-    if IsValid(p.snd) then p.snd:Stop() end
+    if p.snd and p.snd.Stop then pcall(p.snd.Stop, p.snd) end
     Players[idx] = nil
+end
+
+-- Channel state, written defensively: IsPlaying() is documented for
+-- IGModAudioChannel but is absent in some builds (it threw every frame here), so
+-- fall back to GetState(). GMOD_CHANNEL_IS_PLAYING == 1, _BUFFERING == 3.
+local function channelPlaying(snd)
+    if not snd then return false end
+
+    if snd.IsPlaying then
+        local ok, playing = pcall(snd.IsPlaying, snd)
+        if ok then return playing and true or false end
+    end
+
+    if snd.GetState then
+        local ok, state = pcall(snd.GetState, snd)
+        if ok and state ~= nil then return (state == 1 or state == 3) end
+    end
+
+    if snd.GetTime and snd.GetLength then
+        local okTime, now = pcall(snd.GetTime, snd)
+        local okLen, len = pcall(snd.GetLength, snd)
+        if okTime and okLen and now and len and len > 0 then return now < (len - 0.05) end
+    end
+
+    return false
 end
 
 local function voiceError(errId, errName)
@@ -290,8 +315,8 @@ hook.Add("Think", "AINPC_VoiceEngine", function()
                 p.failures = (p.failures or 0) + 1
                 if p.failures >= 3 then stopVoice(idx) end
             end
-        elseif IsValid(p.snd) and p.snd:IsPlaying() then
-            p.snd:SetPos(ent:GetPos() + Vector(0, 0, 62))
+        elseif channelPlaying(p.snd) then
+            if p.snd.SetPos then p.snd:SetPos(ent:GetPos() + Vector(0, 0, 62)) end
         else
             p.snd = nil
             local chunk = p.chunks[p.nextIndex]
@@ -311,7 +336,7 @@ hook.Add("Think", "AINPC_VoiceEngine", function()
                         if Players[idx] ~= p then return end     -- superseded meanwhile
                         p.pending = false
 
-                        if not IsValid(snd) then
+                        if not snd or not snd.SetPos then
                             p.failures = (p.failures or 0) + 1
                             voiceError(errId, errName)
                             if p.failures >= 3 then

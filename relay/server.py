@@ -189,6 +189,17 @@ def fetch_model(model_id):
     return found[0] if found else None
 
 
+def credits():
+    """Remaining Fish credit, or None. Also the cheapest way to prove a key works."""
+    if not CONFIG.key:
+        return None
+    try:
+        parsed = json.loads(fish_request("/wallet/self/api-credit", timeout=20).decode("utf-8", "replace"))
+        return parsed.get("credit")
+    except (FishError, ValueError):
+        return None
+
+
 def preset_entries():
     """Pinned voices, always served first so the in-game dropdown opens useful."""
     out = []
@@ -477,6 +488,7 @@ class Handler(BaseHTTPRequestHandler):
                 "retro": retro_available(),
                 "voices_cached": len(_voices_cache["items"]),
                 "presets": len(CONFIG.data.get("presets", [])),
+                "credits": credits(),
             })
 
         if route == "/voices":
@@ -552,8 +564,9 @@ class Handler(BaseHTTPRequestHandler):
 
             old = CONFIG.key
             CONFIG.set_key(key)
-            try:                                  # validate against the API
-                fetch_voices(force=True)
+            try:
+                # /model answers without auth, so it cannot validate a key.
+                fish_request("/wallet/self/api-credit", timeout=20)
             except FishError as exc:
                 CONFIG.data["fish_key"] = old
                 CONFIG.save()
