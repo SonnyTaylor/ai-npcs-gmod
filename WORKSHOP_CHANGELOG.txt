@@ -1,4 +1,4 @@
-v4.1 — the setup, voices and awareness update
+v4.2 — the setup, voices and awareness update
 
 SETUP IS NOW ONE CLICK
 - New guided setup. Pick a provider, it opens that provider's key page for you, you paste the key and it checks the key actually works before saving it. Fish Audio is the optional second step. Run it again any time from Settings.
@@ -16,6 +16,16 @@ THEY KNOW WHAT IS GOING ON
 THEY CAN ACT
 - Follow, stay, come, wander, attack, stop attacking, flee, switch or drop weapons, open doors and gesture. Ask in chat, or just let them decide.
 - Choose a starting weapon per character, or leave them unarmed.
+
+THEY REMEMBER YOU
+- An NPC's memories, opinions and notes now survive death, respawn and map changes. The same saved character keeps its history with you.
+- New "How AI NPCs see you" box in Settings: tell them what to call you and a line about yourself, and every AI NPC on the server knows it.
+- Your API key never leaves your PC now. On someone else's server your game makes the AI call and only the finished line is sent back.
+
+THEY WON'T RUN UP YOUR BILL
+- Per-NPC and whole-server request limits (ainpc_max_rpm, ainpc_global_rpm), because automatic reactions make calls you never asked for.
+- ainpc_status shows each NPC's provider, request rate and estimated token use.
+- A bad key now pauses background chatter for two minutes instead of retrying forever.
 
 VOICES
 - One voice browser that searches all of Fish Audio, sorted by most used. Duplicate uploads of the same character are merged into one row.
@@ -38,6 +48,8 @@ FIXED
 - Panel backgrounds could be see-through over Mantle windows.
 - The body list could stay permanently short.
 - Spawning showed two identical notifications.
+- A malformed AI reply could be spoken out loud as raw JSON, including its internal {"thought"} block.
+- NPCs on a map with no navmesh silently failed to follow; you now get told.
 
 REMINDER
 - The interface needs Mantle (3126986993) and the Montserrat font (2924839375). Without them you get the older, plainer menu. It still works, it just does not look like the screenshots.

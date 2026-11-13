@@ -53,7 +53,9 @@ provider.models["gpt-4o"].label      = "GPT-4o"
 provider.models["gpt-4o-mini"].label = "GPT-4o Mini"
 provider.models["o4-mini"].label     = "o4-mini (reasoning)"
 
-if SERVER then
+-- `request` runs on whichever machine holds the player's key: the server
+-- when the local player hosts, otherwise that player's own client.
+if SERVER or CLIENT then
     function provider.request(npc, callback)
         local q = npc._quirks or {}
         local tokField = q.tokens_field or "max_completion_tokens"

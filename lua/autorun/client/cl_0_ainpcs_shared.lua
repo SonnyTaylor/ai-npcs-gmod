@@ -73,6 +73,8 @@ local DEFAULTS = {
     temperature   = 1,
     fallbackVoice = "google:en",
     firstRun      = true,
+    -- What every NPC on this server is told about you, in your own words.
+    persona       = { name = "", about = "" },
 }
 
 local function readJson(name)
@@ -99,6 +101,7 @@ function AINPCS.LoadSettings()
         end
     end
     if not istable(s.apiKeys) then s.apiKeys = {} end
+    if not istable(s.persona) then s.persona = { name = "", about = "" } end
     if not istable(s.pinnedVoices) or #s.pinnedVoices == 0 then
         s.pinnedVoices = table.Copy(Voices.StarterFish or {})
     end
@@ -121,6 +124,24 @@ function AINPCS.SaveSettings()
 end
 
 AINPCS.Settings = AINPCS.LoadSettings()
+
+--- True when this client is the machine running the game server
+--- (singleplayer, or the host of a listen server).
+---
+--- Used to decide who holds the keys: when you host, the server is your own PC,
+--- so it can make the requests and the key never travels anywhere. When you join
+--- someone else's server, generation is moved to this client and the server is
+--- never told your key.
+function AINPCS.IsListenHost()
+    if game and game.SinglePlayer and game.SinglePlayer() then return true end
+    local ply = LocalPlayer()
+    if not IsValid(ply) then return false end
+    if ply.IsListenServerHost then
+        local ok, isHost = pcall(ply.IsListenServerHost, ply)
+        if ok then return isHost and true or false end
+    end
+    return false
+end
 
 -- =============================================================================
 -- AI provider key validation (client-side convenience check)
@@ -1005,8 +1026,11 @@ function AINPCS.Spawn(config)
     net.Start("AINPC_SpawnRequest")
     net.WriteTable({
         provider    = settings.provider,
-        apiKey      = key,
-        fishKey     = AINPCS.Trim(settings.fishKey or ""),
+        -- Keys are only handed over when this client *is* the server. On someone
+        -- else's server the model call is made here instead (cl_ainpcs_llm.lua),
+        -- and character voices fall back to whatever key the host configured.
+        apiKey      = AINPCS.IsListenHost() and key or "",
+        fishKey     = AINPCS.IsListenHost() and AINPCS.Trim(settings.fishKey or "") or "",
         hostname    = settings.hostname or "",
         class       = config.class or "npc_citizen",
         bodyModel   = config.bodyModel or "",
@@ -1014,6 +1038,9 @@ function AINPCS.Spawn(config)
         personality = config.description or "",
         name        = AINPCS.Trim(config.name or ""),
         libraryName = AINPCS.Trim(config.libraryName or ""),
+        -- The saved character's id doubles as its memory profile, so the same
+        -- character remembers you across sessions and map changes.
+        profileId   = AINPCS.Trim(config.id or config.profileId or ""),
         model       = settings.model or "",
         max_tokens  = settings.max_tokens or 2048,
         temperature = settings.temperature,
@@ -1023,6 +1050,36 @@ function AINPCS.Spawn(config)
     })
     net.SendToServer()
 end
+
+--- Tell the server how every AI NPC should think of you. Stored per player on
+--- the server in data/ai_npc/personas.json and shown in every NPC's prompt.
+function AINPCS.SavePersona(name, about)
+    local S = AINPCS.Settings
+    S.persona = S.persona or {}
+    S.persona.name  = AINPCS.Trim(name or "")
+    S.persona.about = AINPCS.Trim(about or "")
+    AINPCS.SaveSettings()
+
+    net.Start("AINPC_SetPersona")
+    net.WriteString(S.persona.name)
+    net.WriteString(S.persona.about)
+    net.SendToServer()
+end
+
+--- Push the saved persona at the server (called on connect, since the server
+--- does not read client data files).
+function AINPCS.PushPersona()
+    local p = AINPCS.Settings and AINPCS.Settings.persona
+    if not istable(p) then return end
+    if AINPCS.Trim(p.name or "") == "" and AINPCS.Trim(p.about or "") == "" then return end
+    AINPCS.SavePersona(p.name, p.about)
+end
+
+hook.Add("InitPostEntity", "AINPC_PushPersona", function()
+    timer.Simple(4, function()
+        if IsValid(LocalPlayer()) then AINPCS.PushPersona() end
+    end)
+end)
 
 function AINPCS.CommandNPC(ent, actionName)
     if not IsValid(ent) then return end

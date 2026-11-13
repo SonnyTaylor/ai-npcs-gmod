@@ -31,6 +31,16 @@ local CV_ALLOW_PVP     = CreateConVar("ainpc_allow_pvp",              "1",   FCV
 local CV_REACTIVE      = CreateConVar("ainpc_reactive_events",        "1",   FCVAR_ARCHIVE, "If 1, AI NPCs react in-character when attacked or injured.")
 local CV_MUTE_HL2      = CreateConVar("ainpc_mute_hl2_voice",         "1",   FCVAR_ARCHIVE, "If 1, suppresses default Half-Life 2 voice lines on AI NPCs so they don't overlap AI speech.")
 local CV_OR_REFRESH    = CreateConVar("ainpc_openrouter_autorefresh", "1",   FCVAR_ARCHIVE, "If 1, periodically fetch the current OpenRouter free-model list.")
+-- Character voices need a key to render, and rendering happens here so every
+-- nearby player hears the same voice. On a dedicated server this is how the host
+-- supplies it: players never send their Fish key to a server they do not run.
+local CV_FISH_KEY      = CreateConVar("ainpc_fish_key", "", FCVAR_ARCHIVE, "Optional Fish Audio key used by the SERVER to render character voices. Players' own Fish keys are only used when they host.")
+
+-- Cost control. Every reply is a billable provider call, and the automatic
+-- reactions (being attacked, witnessing a death) make calls nobody explicitly
+-- asked for, so both a per-NPC and a whole-server ceiling matter.
+local CV_MAX_RPM       = CreateConVar("ainpc_max_rpm",    "20", FCVAR_ARCHIVE, "Maximum AI requests per minute per NPC. 0 = unlimited.", 0, 600)
+local CV_GLOBAL_RPM    = CreateConVar("ainpc_global_rpm", "60", FCVAR_ARCHIVE, "Maximum AI requests per minute for the whole server. 0 = unlimited.", 0, 5000)
 
 -- =============================================================================
 -- Localhost HTTP Relay (via CHTTP or Host Client's hidden DHTML browser)
@@ -143,6 +153,11 @@ end)
 local NPCs = {}
 local ModelQuirks = {} -- ["provider|model"] = { no_temp, no_reasoning, tokens_field }
 
+-- Request accounting, per NPC and for the server as a whole.
+local GlobalRequests = {}      -- [CurTime] of each accepted request
+local GlobalTokens   = 0
+local GlobalReplies  = 0
+
 local NextSpawn   = {}
 local NextChat    = {}
 local NextUse     = {}
@@ -221,6 +236,217 @@ local function timeAgo(seconds)
     if seconds < 60 then return seconds .. "s ago" end
     return math.floor(seconds / 60) .. "m ago"
 end
+
+-- =============================================================================
+-- Persistence — characters remember you between sessions
+--
+-- An NPC's identity is a stable profile id (the saved character's id from the
+-- client library), not the entity index, so memory survives death, respawn,
+-- map changes and the duplicator. Files live in data/ai_npc/profiles/<id>.json.
+--
+-- Only memory and character fields are written. Keys are never persisted here.
+-- =============================================================================
+
+local PROFILE_DIR   = "ai_npc/profiles"
+local PERSONA_FILE  = "ai_npc/personas.json"
+local ProfileCache  = {}     -- [id] = profile table
+local ProfileDirty  = {}     -- [id] = true
+local Personas      = nil
+
+local function ensureDirs()
+    if not file.IsDir("ai_npc", "DATA") then file.CreateDir("ai_npc") end
+    if not file.IsDir(PROFILE_DIR, "DATA") then file.CreateDir(PROFILE_DIR) end
+end
+
+--- Profile ids come from the client, so treat them as hostile input: they become
+--- filenames.
+local function validProfileId(id)
+    return isstring(id) and #id > 0 and #id <= 48 and string.match(id, "^[%w_%-]+$") ~= nil
+end
+
+local function profilePath(id)
+    return PROFILE_DIR .. "/" .. id .. ".json"
+end
+
+local function newMemory()
+    return { people = {}, notes = {}, deaths = 0, kills = 0, mood = "neutral" }
+end
+
+--- Repair anything odd so a hand-edited or older file cannot break the NPC.
+local function sanitizeProfile(p, id)
+    if not istable(p) then p = {} end
+    p.version = 1
+    p.id = validProfileId(p.id) and p.id or id
+
+    local mem = istable(p.memory) and p.memory or {}
+    mem.people = istable(mem.people) and mem.people or {}
+    mem.notes  = istable(mem.notes) and mem.notes or {}
+    mem.deaths = tonumber(mem.deaths) or 0
+    mem.kills  = tonumber(mem.kills) or 0
+    mem.mood   = isstring(mem.mood) and mem.mood or "neutral"
+
+    for key, person in pairs(mem.people) do
+        if not validProfileId(key) then
+            mem.people[key] = nil
+        elseif not istable(person) then
+            mem.people[key] = nil
+        else
+            person.name     = isstring(person.name) and person.name or "Player"
+            person.affinity = math.Clamp(tonumber(person.affinity) or 0, -100, 100)
+            person.facts    = istable(person.facts) and person.facts or {}
+            person.met      = tonumber(person.met) or 1
+            local facts = {}
+            for _, f in ipairs(person.facts) do
+                if isstring(f) and f ~= "" then facts[#facts + 1] = AINPCS.CleanText(f, 160) end
+            end
+            while #facts > 12 do table.remove(facts, 1) end
+            person.facts = facts
+        end
+    end
+
+    local notes = {}
+    for _, n in ipairs(mem.notes) do
+        if isstring(n) and n ~= "" then notes[#notes + 1] = AINPCS.CleanText(n, 160) end
+    end
+    while #notes > 14 do table.remove(notes, 1) end
+    mem.notes = notes
+
+    p.memory = mem
+    return p
+end
+
+local function loadProfile(id)
+    if not validProfileId(id) then return nil end
+    if ProfileCache[id] then return ProfileCache[id] end
+    if not file.Exists(profilePath(id), "DATA") then return nil end
+
+    local raw = file.Read(profilePath(id), "DATA")
+    if not raw or raw == "" then return nil end
+
+    local parsed = AINPCS.SafeJSON(raw)
+    if not istable(parsed) then
+        AINPCS.DebugPrint("[AI-NPCs] unreadable profile " .. id .. ", starting fresh")
+        return nil
+    end
+
+    ProfileCache[id] = sanitizeProfile(parsed, id)
+    return ProfileCache[id]
+end
+
+local function saveProfile(rec)
+    if not rec or not validProfileId(rec.profileId) then return end
+    ProfileDirty[rec.profileId] = nil
+
+    local people = {}
+    for key, person in pairs(rec.people or {}) do
+        if validProfileId(key) then
+            people[key] = {
+                name     = person.name,
+                affinity = math.Clamp(tonumber(person.affinity) or 0, -100, 100),
+                facts    = person.facts,
+                met      = person.met or 1,
+                lastTalk = person.lastTalkWall or os.time(),
+            }
+        end
+    end
+
+    local data = {
+        version     = 1,
+        id          = rec.profileId,
+        name        = rec.name,
+        description = rec.personality,
+        class       = rec.npcClass,
+        provider    = rec.provider,
+        bodyModel   = rec.bodyModel or (IsValid(rec.ent) and rec.ent:GetModel() or "") or "",
+        weapon      = rec.weaponChoice,
+        voiceId     = rec.voiceId,
+        memory      = {
+            people = people,
+            notes  = rec.notes or {},
+            deaths = rec.deaths or 0,
+            kills  = rec.kills or 0,
+            mood   = rec.mood or "neutral",
+        },
+        updated = os.time(),
+    }
+
+    local json = util.TableToJSON(data, true)
+    if not json then return end
+
+    ensureDirs()
+    file.Write(profilePath(rec.profileId), json)
+    ProfileCache[rec.profileId] = data
+end
+
+local function markProfileDirty(rec)
+    if not rec or not validProfileId(rec.profileId) then return end
+    ProfileDirty[rec.profileId] = rec
+end
+
+--- Flush memory to disk in the background: chat happens in bursts and writing a
+--- file per message is not worth it. Removal and cleanup flush immediately.
+timer.Create("AINPC_ProfileFlush", 8, 0, function()
+    for _, rec in pairs(ProfileDirty) do
+        if istable(rec) then saveProfile(rec) end
+    end
+end)
+
+-- =============================================================================
+-- Player personas — what players tell every NPC about themselves
+-- =============================================================================
+
+local function loadPersonas()
+    if Personas then return Personas end
+    Personas = {}
+    if file.Exists(PERSONA_FILE, "DATA") then
+        local parsed = AINPCS.SafeJSON(file.Read(PERSONA_FILE, "DATA") or "")
+        if istable(parsed) then
+            for key, p in pairs(parsed) do
+                if validProfileId(key) and istable(p) then
+                    local about = AINPCS.CleanText(tostring(p.about or ""), 320)
+                    local name  = AINPCS.CleanText(tostring(p.name or ""), 32)
+                    if about ~= "" or name ~= "" then
+                        Personas[key] = { name = name, about = about }
+                    end
+                end
+            end
+        end
+    end
+    return Personas
+end
+
+local function getPersona(ply)
+    if not IsValid(ply) or not ply:IsPlayer() then return nil end
+    local p = loadPersonas()[plyKey(ply)]
+    if not p then return nil end
+    if AINPCS.Trim(p.name or "") == "" and AINPCS.Trim(p.about or "") == "" then return nil end
+    return p
+end
+
+net.Receive("AINPC_SetPersona", function(_, ply)
+    if not IsValid(ply) then return end
+    local name  = AINPCS.CleanText(net.ReadString() or "", 32)
+    local about = AINPCS.CleanText(net.ReadString() or "", 320)
+
+    local all = loadPersonas()
+    local key = plyKey(ply)
+    if name == "" and about == "" then
+        all[key] = nil
+    else
+        all[key] = { name = name, about = about }
+    end
+
+    local previous = loadPersonas()[key]
+    local changed = not previous
+        or previous.name ~= name
+        or previous.about ~= about
+
+    if changed then
+        ensureDirs()
+        file.Write(PERSONA_FILE, util.TableToJSON(all, true))
+        AINPCS.DebugPrint("[AI-NPCs] persona for " .. ply:Nick() .. ": " .. about)
+    end
+end)
 
 local function countNPCsOwnedBy(ply)
     local key = plyKey(ply)
@@ -303,6 +529,7 @@ local function getPersonRecord(rec, ply)
     else
         p.name = speakerName(ply)
     end
+    markProfileDirty(rec)
     return p
 end
 
@@ -310,6 +537,7 @@ local function adjustAffinity(rec, ply, delta)
     local p = getPersonRecord(rec, ply)
     if not p then return end
     p.affinity = math.Clamp((p.affinity or 0) + (delta or 0), -100, 100)
+    markProfileDirty(rec)
 end
 
 local function addPersonFact(rec, ply, factText)
@@ -324,6 +552,7 @@ local function addPersonFact(rec, ply, factText)
         end
         table.insert(p.facts, factText)
         while #p.facts > 10 do table.remove(p.facts, 1) end
+        markProfileDirty(rec)
     else
         rec.notes = rec.notes or {}
         local low = string.lower(factText)
@@ -332,6 +561,7 @@ local function addPersonFact(rec, ply, factText)
         end
         table.insert(rec.notes, factText)
         while #rec.notes > 12 do table.remove(rec.notes, 1) end
+        markProfileDirty(rec)
     end
 end
 
@@ -438,6 +668,7 @@ local function cleanupNPC(entIndex)
     local rec = NPCs[entIndex]
     if not rec then return end
     timer.Remove("AINPC_Timeout_" .. entIndex)
+    saveProfile(rec)                       -- memory outlives the entity
     if IsValid(rec.ent) then rec.ent:SetNWBool("IsAINPC", false) end
     NPCs[entIndex] = nil
 end
@@ -445,6 +676,7 @@ end
 local function cleanupAll()
     for idx, rec in pairs(NPCs) do
         timer.Remove("AINPC_Timeout_" .. idx)
+        saveProfile(rec)
         if IsValid(rec.ent) then rec.ent:Remove() end
     end
     NPCs = {}
@@ -479,10 +711,9 @@ local function spawnAINPC(ply, data)
         return
     end
 
-    if provider.id ~= "ollama" and AINPCS.IsBlank(data.apiKey) then
-        sendToast(ply, "API key required for " .. provider.label .. ". Open Settings and paste one.", "error")
-        return
-    end
+    -- Deliberately no key check here. A joined player never sends their key, so
+    -- the server cannot know whether they have one; the client refuses to spawn
+    -- without a key and the request path reports it if it turns out to be missing.
 
     local npcData = lookupNPCData(data.class)
     if not npcData then
@@ -582,12 +813,18 @@ local function spawnAINPC(ply, data)
     local rec = {
         ent            = ent,
         npcClass       = data.class,
+        bodyModel      = ent:GetModel() or "",
         npcData        = npcData,
         owner          = ply,
         ownerKey       = key,
         provider       = provider.id,
-        apiKey         = data.apiKey or "",
-        fishKey        = AINPCS.Trim(data.fishKey or ""),
+        -- A joined player never sends these: their model call happens on their own
+        -- machine. The host key is used so character voices still render for
+        -- everyone when the server owner has configured one.
+        apiKey         = AINPCS.Trim(data.apiKey or ""),
+        fishKey        = AINPCS.Trim(CV_FISH_KEY:GetString()) ~= ""
+                             and AINPCS.Trim(CV_FISH_KEY:GetString())
+                             or AINPCS.Trim(data.fishKey or ""),
         hostname       = data.hostname or "",
         model          = modelId,
         max_tokens     = tonumber(data.max_tokens) or 2048,
@@ -612,6 +849,41 @@ local function spawnAINPC(ply, data)
         nextReactTime  = 0,
     }
 
+    -- A stable profile id comes from the saved character, so the same character
+    -- keeps its memories across sessions, deaths and map changes.
+    rec.profileId = validProfileId(data.profileId or "") and data.profileId
+        or validProfileId(data.libraryId or "") and data.libraryId
+        or nil
+
+    if rec.profileId then
+        local profile = loadProfile(rec.profileId)
+        if profile then
+            local mem = profile.memory
+            rec.people = {}
+            for key, person in pairs(mem.people or {}) do
+                rec.people[key] = {
+                    name         = person.name,
+                    affinity     = person.affinity,
+                    facts        = person.facts,
+                    met          = person.met,
+                    lastTalk     = 0,
+                    lastTalkWall = person.lastTalk,
+                }
+            end
+            rec.notes  = mem.notes
+            rec.deaths = mem.deaths
+            rec.kills  = mem.kills
+            if AINPCS.Emotions[mem.mood or ""] then setMood(rec, mem.mood) end
+
+            ent:SetNWString("AINPCProfile", rec.profileId)
+            local nPeople = 0
+            for _ in pairs(rec.people) do nPeople = nPeople + 1 end
+            AINPCS.DebugPrint("[AI-NPCs] restored profile " .. tostring(rec.profileId) ..
+                " (" .. #(rec.notes or {}) .. " notes, " .. nPeople .. " people, " ..
+                tostring(rec.deaths) .. " deaths)")
+        end
+    end
+
     getPersonRecord(rec, ply)
     NPCs[ent:EntIndex()] = rec
     NextSpawn[key] = now + CV_COOLDOWN:GetFloat()
@@ -623,6 +895,17 @@ local function spawnAINPC(ply, data)
     net.Send(ply)
 
     sendToast(ply, displayName .. " spawned. Walk up and press E to talk.", "success")
+
+    -- Follow/attack rely on an AI schedule that needs a navmesh. Without one the
+    -- NPC still talks, it just cannot walk, and silently doing nothing is worse
+    -- than saying so once.
+    if navmesh and navmesh.IsLoaded and not navmesh.IsLoaded() then
+        timer.Simple(1, function()
+            if IsValid(ply) then
+                sendToast(ply, "This map has no navmesh — NPCs can talk but cannot follow or walk. Run nav_generate on a listen server to fix it.", "info")
+            end
+        end)
+    end
     AINPCS.DebugPrint("[AI-NPCs] " .. ply:Nick() .. " spawned " .. displayName .. " (" .. entClass .. ") via " .. provider.id)
 end
 
@@ -1094,11 +1377,19 @@ local function buildSituationContext(rec, speaker, utterance, eventReason)
                 table.insert(bits, "attacked you " .. timeAgo(now - atkTime))
             end
 
+            local persona = getPersona(ply)
+            if persona and AINPCS.Trim(persona.name or "") ~= "" then
+                table.insert(bits, "goes by \"" .. persona.name .. "\"")
+            end
+
             local pMem = getPersonRecord(rec, ply)
             local relStr = pMem and string.format("relationship: %s (%+d)", affinityLabel(pMem.affinity), math.Round(pMem.affinity)) or ""
             if relStr ~= "" then table.insert(bits, relStr) end
 
             add("- " .. pName .. " (player): " .. table.concat(bits, ", "))
+            if persona and AINPCS.Trim(persona.about or "") ~= "" then
+                add("    About " .. pName .. ", in their own words: " .. persona.about)
+            end
             if pMem and #pMem.facts > 0 then
                 add("    Remembered facts about " .. pName .. ": " .. table.concat(pMem.facts, "; "))
             end
@@ -1695,11 +1986,17 @@ local function cleanSpokenReply(rec, rawSay)
 
     text = string.gsub(text, "^" .. string.PatternSafe(rec.name or "NPC") .. "%s*:%s*", "")
     text = string.gsub(text, "^[\"']+(.-)[\"']+$", "%1")
-    text = AINPCS.CleanText(text, 480)
+    -- A reply that failed to parse as JSON must never be read out as JSON.
+    text = AINPCS.CleanSpokenText(text)
     return text, inlineActions
 end
 
 local function handleModelReply(rec, rawContent, asker, speakerLine)
+    -- Rough reply-side token cost, so ainpc_status is not wildly optimistic.
+    local replyTokens = math.ceil(#tostring(rawContent or "") / 4)
+    rec.tokensUsed = (rec.tokensUsed or 0) + replyTokens
+    GlobalTokens = GlobalTokens + replyTokens
+
     local cleaned = AINPCS.CleanModelText(rawContent)
     local parsed  = AINPCS.ParseJSONLoose(cleaned)
 
@@ -1778,6 +2075,65 @@ local function handleModelReply(rec, rawContent, asker, speakerLine)
     end
 end
 
+-- =============================================================================
+-- Request budget
+--
+-- Every reply is billable, and the automatic reactions (being attacked, seeing a
+-- death) make calls nobody asked for. A per-NPC and a per-server rate limit keep a
+-- firefight from quietly spending money, and a rough token count gives people
+-- something to look at.
+-- =============================================================================
+
+local function pruneTimes(list, window)
+    local now = CurTime()
+    local i = 1
+    while list[i] do
+        if now - list[i] > window then table.remove(list, i) else i = i + 1 end
+    end
+end
+
+--- Rough token estimate: ~4 characters per token for English.
+local function estimateTokens(text)
+    if not isstring(text) then return 0 end
+    return math.ceil(#text / 4)
+end
+
+--- Can this NPC make a request right now? Returns ok, reason.
+local function requestAllowed(rec)
+    local perMinute = CV_MAX_RPM:GetInt()
+    if perMinute > 0 then
+        rec.reqTimes = rec.reqTimes or {}
+        pruneTimes(rec.reqTimes, 60)
+        if #rec.reqTimes >= perMinute then
+            return false, "this NPC has hit its " .. perMinute .. "/min request limit (ainpc_max_rpm)"
+        end
+    end
+
+    local globalLimit = CV_GLOBAL_RPM:GetInt()
+    if globalLimit > 0 then
+        pruneTimes(GlobalRequests, 60)
+        if #GlobalRequests >= globalLimit then
+            return false, "the server has hit its " .. globalLimit .. "/min request limit (ainpc_global_rpm)"
+        end
+    end
+
+    if rec.blockedUntil and CurTime() < rec.blockedUntil then
+        return false, "the last request failed (" .. tostring(rec.blockedReason or "error") .. "), waiting a moment"
+    end
+
+    return true
+end
+
+local function recordRequest(rec, promptTokens)
+    rec.reqTimes = rec.reqTimes or {}
+    table.insert(rec.reqTimes, CurTime())
+    table.insert(GlobalRequests, CurTime())
+
+    rec.tokensUsed = (rec.tokensUsed or 0) + (promptTokens or 0)
+    GlobalTokens = GlobalTokens + (promptTokens or 0)
+    GlobalReplies = GlobalReplies + 1
+end
+
 local function triggerNPCDeliberation(rec, asker, userText, eventReason)
     if not IsValid(rec.ent) or rec.ent:Health() <= 0 then
         if IsValid(asker) then sendToast(asker, "That NPC is gone.", "error") end
@@ -1807,8 +2163,21 @@ local function triggerNPCDeliberation(rec, asker, userText, eventReason)
         end
     end
 
+    -- Rate/token gate. Only an explicit message to the NPC is worth telling the
+    -- player about; a skipped background reaction should stay quiet.
+    local allowed, whyNot = requestAllowed(rec)
+    if not allowed then
+        AINPCS.DebugPrint("[AI-NPCs] skipped: " .. tostring(whyNot))
+        if userText and IsValid(asker) then
+            sendChatReply(rec, "(" .. (rec.name or "NPC") .. " is thinking too much right now — " .. whyNot .. ".)", true, asker, userText)
+        end
+        return
+    end
+
     local sysPrompt   = buildSystemPrompt(rec)
     local userContext = buildSituationContext(rec, asker, userText, eventReason)
+
+    recordRequest(rec, estimateTokens(sysPrompt) + estimateTokens(userContext))
 
     rec.messages = {
         { role = "system", content = sysPrompt },
@@ -1840,6 +2209,64 @@ local function triggerNPCDeliberation(rec, asker, userText, eventReason)
             sendChatReply(rec, "(" .. (rec.name or "NPC") .. " didn't answer in time — the provider is slow or unreachable.)", true, asker, userText)
         end
     end)
+
+    -- No key on this machine means the player who asked is generating the reply
+    -- on their own client (cl_ainpcs_llm.lua). Ask the asker first, fall back to
+    -- the NPC's owner if the asker has no key for this provider.
+    if rec.apiKey == "" then
+        local candidates = {}
+        local seen = {}
+        for _, cand in ipairs({ asker, rec.owner }) do
+            if IsValid(cand) and cand:IsPlayer() and not seen[cand] then
+                seen[cand] = true
+                candidates[#candidates + 1] = cand
+            end
+        end
+
+        if #candidates == 0 then
+            if settle() then
+                sendChatReply(rec, "(" .. (rec.name or "NPC") .. " needs a " ..
+                    provider.label .. " key. Add one in Settings — it stays on your PC.)", true, asker, userText)
+            end
+            return
+        end
+
+        rec.pendingClient = { candidates = candidates, token = token }
+
+        local function dispatch(idx)
+            local target = candidates[idx]
+            if not IsValid(target) then return false end
+
+            rec.pendingClient.index = idx
+            rec.pendingClient.ply = target
+
+            net.Start("AINPC_LLMRequest")
+            net.WriteUInt(rec.ent:EntIndex(), 16)
+            net.WriteUInt(token, 16)
+            net.WriteTable({
+                provider    = rec.provider,
+                model       = rec.model,
+                max_tokens  = rec.max_tokens,
+                temperature = rec.temperature,
+                reasoning   = rec.reasoning,
+                quirks      = rec._quirks,
+                messages    = rec.messages,
+                npcName     = rec.name,
+            })
+            net.Send(target)
+            return true
+        end
+
+        rec.dispatchLLMRequest = dispatch
+
+        if not dispatch(1) then
+            if settle() then
+                sendChatReply(rec, "(" .. (rec.name or "NPC") .. " needs a " ..
+                    provider.label .. " key. Add one in Settings — it stays on your PC.)", true, asker, userText)
+            end
+        end
+        return
+    end
 
     local attempt = 0
     local function doRequest()
@@ -1879,6 +2306,18 @@ local function triggerNPCDeliberation(rec, asker, userText, eventReason)
                 end
 
                 if not settle() then return end
+
+                -- A rejected key or a bad model will keep failing; stop hammering
+                -- the provider and stop making unprompted calls for a while.
+                local lowErr = string.lower(tostring(rawErr or ""))
+                if string.find(lowErr, "401") or string.find(lowErr, "403")
+                    or string.find(lowErr, "invalid api key") or string.find(lowErr, "unauthor")
+                    or string.find(lowErr, "404") or string.find(lowErr, "model not found") then
+                    rec.blockedUntil = CurTime() + 120
+                    rec.blockedReason = rawErr
+                    AINPCS.DebugPrint("[AI-NPCs] pausing autonomous calls for 2 minutes: " .. tostring(rawErr))
+                end
+
                 local errMsg = scrubKey(rec, rawErr)
                 AINPCS.DebugPrint("[AI-NPCs] bad response from " .. rec.provider .. ": " .. errMsg)
                 if userText then
@@ -1901,6 +2340,73 @@ local function triggerNPCDeliberation(rec, asker, userText, eventReason)
 
     doRequest()
 end
+
+-- A player's game built the reply with their own key. Treat it as untrusted:
+-- it is only accepted for the exact request this player was handed, and the
+-- actions inside it still go through the same validators as a server-made reply.
+local NextLLMReply = {}
+
+net.Receive("AINPC_LLMReply", function(_, ply)
+    if not IsValid(ply) then return end
+
+    local entIdx = net.ReadUInt(16)
+    local token  = net.ReadUInt(16)
+    local content = net.ReadString() or ""
+    local errText = net.ReadString() or ""
+    local noKey   = net.ReadBool()
+
+    local rec = NPCs[entIdx]
+    if not rec or not IsValid(rec.ent) then return end
+
+    -- Rate-limit junk so a modified client cannot spray replies.
+    local key = plyKey(ply)
+    local now = CurTime()
+    if (NextLLMReply[key] or 0) > now then return end
+    NextLLMReply[key] = now + 0.25
+
+    local pending = rec.pendingClient
+    if not istable(pending) or pending.ply ~= ply or pending.token ~= token then return end
+
+    if noKey then
+        -- That player has no key for this provider; try the next candidate.
+        local nextIndex = (pending.index or 1) + 1
+        if rec.dispatchLLMRequest and rec.dispatchLLMRequest(nextIndex) then
+            return
+        end
+        rec.pendingClient = nil
+        if rec.token == token then
+            rec.token = token + 1
+            timer.Remove("AINPC_Timeout_" .. entIdx)
+            setThinking(rec, false)
+            sendChatReply(rec, "(" .. (rec.name or "NPC") .. " needs a " ..
+                tostring(rec.provider) .. " key. Add one in Settings — it stays on your PC.)", true, ply, nil)
+        end
+        return
+    end
+
+    if rec.token ~= token then return end
+
+    rec.pendingClient = nil
+    rec.dispatchLLMRequest = nil
+    rec.token = token + 1
+    timer.Remove("AINPC_Timeout_" .. entIdx)
+    setThinking(rec, false)
+
+    if errText ~= "" then
+        sendChatReply(rec, "(" .. (rec.name or "NPC") .. " can't respond right now: " .. errText .. ")", true, ply, nil)
+        return
+    end
+
+    if AINPCS.Trim(AINPCS.CleanModelText(content)) == "" then
+        sendChatReply(rec, "(" .. (rec.name or "NPC") .. " returned an empty reply.)", true, ply, nil)
+        return
+    end
+
+    local ok, handleErr = pcall(handleModelReply, rec, content, ply, nil)
+    if not ok then
+        AINPCS.DebugPrint("[AI-NPCs] client reply handling failed: " .. tostring(handleErr))
+    end
+end)
 
 -- =============================================================================
 -- World Event Hooks (Damage, Kills, Gunfire)
@@ -1974,6 +2480,10 @@ hook.Add("OnNPCKilled", "AINPC_KillAwareness", function(npc, attacker, inflictor
     local deadIdx = npc:EntIndex()
 
     if NPCs[deadIdx] then
+        local rec = NPCs[deadIdx]
+        rec.deaths = (rec.deaths or 0) + 1
+        addEvent(rec, "You died.", 3)
+        saveProfile(rec)
         cleanupNPC(deadIdx)
         return
     end
@@ -1985,6 +2495,8 @@ hook.Add("OnNPCKilled", "AINPC_KillAwareness", function(npc, attacker, inflictor
     for _, rec in pairs(NPCs) do
         if IsValid(rec.ent) then
             if attacker == rec.ent then
+                rec.kills = (rec.kills or 0) + 1
+                markProfileDirty(rec)
                 addEvent(rec, "You killed " .. victimDesc .. "!", 2)
                 if rec.goal and rec.goal.type == "attack" and rec.goal.target == npc then
                     rec.goal = { type = "idle" }
@@ -2353,5 +2865,122 @@ hook.Add("OnCleanup", "AINPC_Cleanup", function(name)
 end)
 
 hook.Add("PostCleanupMap", "AINPC_MapCleanup", cleanupAll)
+
+-- =============================================================================
+-- Admin console commands
+-- =============================================================================
+
+local function out(ply, msg)
+    if IsValid(ply) then
+        ply:PrintMessage(HUD_PRINTCONSOLE, msg)
+    else
+        print(msg)
+    end
+end
+
+local function requireAdmin(ply)
+    if IsValid(ply) and not ply:IsAdmin() then
+        out(ply, "[AI-NPCs] Admins only.")
+        return false
+    end
+    return true
+end
+
+concommand.Add("ainpc_status", function(ply)
+    if not requireAdmin(ply) then return end
+
+    out(ply, string.format("[AI-NPCs] v%s | %d NPC(s) | navmesh: %s",
+        tostring(AINPCS.Version), table.Count(NPCs),
+        (navmesh and navmesh.IsLoaded and navmesh.IsLoaded()) and "loaded" or "MISSING (run nav_generate)"))
+
+    pruneTimes(GlobalRequests, 60)
+    out(ply, string.format("  requests this minute: %d/%s   replies: %d   tokens (estimated): %d",
+        #GlobalRequests,
+        CV_GLOBAL_RPM:GetInt() == 0 and "unlimited" or tostring(CV_GLOBAL_RPM:GetInt()),
+        GlobalReplies, GlobalTokens))
+
+    if table.Count(NPCs) == 0 then
+        out(ply, "  no AI NPCs spawned.")
+        return
+    end
+
+    for _, rec in pairs(NPCs) do
+        if IsValid(rec.ent) then
+            local perMin = 0
+            for _, t in ipairs(rec.reqTimes or {}) do
+                if CurTime() - t <= 60 then perMin = perMin + 1 end
+            end
+
+            out(ply, string.format("  #%d %s — %s/%s, %s, %d tokens, %d req/min, %s%s",
+                rec.ent:EntIndex(), tostring(rec.name),
+                tostring(rec.provider), tostring(rec.model),
+                tostring(rec.activityLabel or "idle"),
+                rec.tokensUsed or 0, perMin,
+                rec.apiKey == "" and "client-side key" or "server-side key",
+                (rec.blockedUntil and CurTime() < rec.blockedUntil) and " [paused]" or ""))
+        end
+    end
+end)
+
+concommand.Add("ainpc_spawn", function(ply, cmd, args)
+    if not IsValid(ply) then
+        print("[AI-NPCs] ainpc_spawn must be run by a player.")
+        return
+    end
+    if not CV_ENABLED:GetBool() then
+        sendToast(ply, "AI NPCs are disabled on this server.", "error")
+        return
+    end
+
+    local wanted = AINPCS.Trim(table.concat(args or {}, " "))
+    if wanted == "" then
+        sendToast(ply, "Usage: ainpc_spawn <character name>", "info")
+        return
+    end
+
+    -- Re-spawn an NPC that is already in the world but was removed: match by name
+    -- against the saved profiles, which is what "bring back my character" means.
+    ensureDirs()
+    local files = file.Find(PROFILE_DIR .. "/*.json", "DATA") or {}
+    local matches = {}
+
+    for _, name in ipairs(files) do
+        local id = string.match(name, "^(.+)%.json$")
+        local profile = id and loadProfile(id)
+        if profile and isstring(profile.name)
+            and string.find(string.lower(profile.name), string.lower(wanted), 1, true) then
+            matches[#matches + 1] = profile
+        end
+    end
+
+    if #matches == 0 then
+        sendToast(ply, "No saved character matches \"" .. wanted .. "\". Saved characters appear here after they have spawned once.", "error")
+        return
+    end
+    if #matches > 1 then
+        local names = {}
+        for i = 1, math.min(#matches, 5) do names[#names + 1] = matches[i].name end
+        sendToast(ply, "Several match: " .. table.concat(names, ", "), "info")
+        return
+    end
+
+    local profile = matches[1]
+    local fallbackProvider = "groq"
+    do
+        local list = providers.list()
+        if list[1] then fallbackProvider = list[1].id end
+    end
+
+    spawnAINPC(ply, {
+        provider    = (isstring(profile.provider) and profile.provider ~= "") and profile.provider or fallbackProvider,
+        class       = profile.class or "npc_citizen",
+        bodyModel   = profile.bodyModel or "",
+        weapon      = profile.weapon or "none",
+        personality = profile.description or "",
+        name        = profile.name or "NPC",
+        voiceId     = profile.voiceId or "google:en",
+        profileId   = profile.id,
+    })
+end)
 
 AINPCS.DebugPrint("[AI-NPCs] server loaded, version " .. AINPCS.Version)

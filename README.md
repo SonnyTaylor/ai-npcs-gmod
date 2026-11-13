@@ -4,6 +4,26 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 
 ![](https://img.shields.io/steam/subscriptions/3142705974?label=Steam%20Subscriptions&style=for-the-badge&logo=steam)
 
+## What's new in v4.2
+
+- **They remember you between sessions.** An NPC's memories, opinions and notes
+  are keyed to a stable profile id (the saved character's id, not the entity), so
+  they survive death, respawn, map changes and the duplicator. Files live in
+  `garrysmod/data/ai_npc/profiles/`.
+- **Tell them who you are.** New "How AI NPCs see you" box in Settings — your name
+  and a line about yourself, given to every AI NPC on the server.
+- **Your API key never leaves your PC.** When you join someone else's server, your
+  game makes the model call and only the finished line is sent back. Hosting
+  (singleplayer or listen server) still does it server-side, where the key never
+  travels anyway.
+- **Cost control.** `ainpc_max_rpm` / `ainpc_global_rpm` cap requests per minute
+  per NPC and for the server, `ainpc_status` shows estimated token use, and a
+  rejected key pauses autonomous calls for two minutes instead of retrying forever.
+- **No more reading JSON aloud.** A reply that fails to parse as JSON is now
+  stripped of its scaffolding instead of being spoken verbatim.
+- **Navmesh warning** when you spawn on a map with no navmesh, instead of NPCs
+  silently failing to walk.
+
 ## What's new in v4.1
 
 - **A guided setup.** The first time you open the panel without a key, a wizard
@@ -177,7 +197,9 @@ The voice browser is search-first:
 - **★** pins a voice; pinned voices appear first on the first page;
 - language filter, 50 per page, and pasting a raw 32-hex model id resolves it.
 
-Your key is stored in `garrysmod/data/ai_npcs_settings.json` on your machine only.
+Your key is stored in `garrysmod/data/ai_npcs_settings.json` on your machine only,
+and the model call is made on your machine too when you are playing on someone
+else's server.
 Search and key checks run in your game; **spoken lines are rendered by the server**
 and streamed to nearby players, so nobody else needs a key to hear the NPC. Rendered
 lines are cached per `voice|text`, so a repeated line is free the second time.
@@ -204,6 +226,10 @@ All of these are `FCVAR_ARCHIVE` so they persist across restarts.
 | `ainpc_reactive_events` | 1 | NPCs react in character when they are attacked |
 | `ainpc_mute_hl2_voice` | 1 | Suppress stock HL2 voice lines on AI NPCs so they do not talk over the AI |
 | `ainpc_openrouter_autorefresh` | 1 | Auto-fetch OpenRouter's free model list daily |
+| `ainpc_max_rpm` | 20 | Max AI requests per minute per NPC (0 = unlimited) |
+| `ainpc_global_rpm` | 60 | Max AI requests per minute for the whole server (0 = unlimited) |
+| `ainpc_fish_key` | `` (empty) | Fish Audio key used by the **server** to render character voices. Players' own Fish keys are only used when they host |
+| `ainpc_debug` | 0 | 1 = print prompts/replies to console, 2 = also print full request payloads |
 
 ### Client convars
 
@@ -214,7 +240,9 @@ All of these are `FCVAR_ARCHIVE` so they persist across restarts.
 | `ainpc_voice_volume` | 1 | Voice volume (0–1) |
 
 Commands: `ainpc_open` (the panel), `ainpc_setup` (the guided setup),
-`ainpc_voice_diag` (what the addon sees for Fish Audio).
+`ainpc_status` (per-NPC state, request and token usage, navmesh — admin or console),
+`ainpc_spawn <name>` (bring back a saved character), `ainpc_voice_diag` (what the
+addon sees for Fish Audio), `ainpc_debug 1` (watch the prompts and replies).
 
 ## Manual installation
 

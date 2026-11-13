@@ -942,6 +942,35 @@ function AINPCS.OpenClassic()
 
     divider(sl)
     gap(sl, 10)
+    divider(sl)
+    gap(sl, 10)
+    heading(sl, "How AI NPCs see you",
+        "Optional. Your name and a line about you are given to every AI NPC on this server, so they can greet you properly and remember the right things.")
+
+    local pn = AINPCS.Settings.persona or {}
+
+    local pNameRow = field(sl, 36)
+    local pNameE = vgui.Create("DTextEntry", pNameRow)
+    pNameE:SetWide(CONTENT_W)
+    pNameE:SetTall(34)
+    pNameE:SetUpdateOnType(true)
+    pNameE:SetPlaceholderText("What should they call you? (defaults to your Steam name)")
+    pNameE:SetText(pn.name or "")
+
+    local pAboutRow = field(sl, 96)
+    local pAboutE = vgui.Create("DTextEntry", pAboutRow)
+    pAboutE:SetMultiline(true)
+    pAboutE:SetWide(CONTENT_W)
+    pAboutE:SetTall(92)
+    pAboutE:SetUpdateOnType(true)
+    pAboutE:SetPlaceholderText("A line about you, e.g. \"I'm the server owner and I hate zombies\"")
+    pAboutE:SetText(pn.about or "")
+
+    local pSave = addButton(sl, "Save", "primary", function()
+        AINPCS.SavePersona(pNameE:GetValue(), pAboutE:GetValue())
+        AINPCS.PushToast("Saved — AI NPCs will use that from now on.", "success")
+    end, 140)
+
     heading(sl, "Fallback voice",
         "Used when an NPC has no character voice, or when the voice service is down. No account needed.")
 

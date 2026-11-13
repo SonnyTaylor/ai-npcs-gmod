@@ -50,7 +50,9 @@ provider.models["meta-llama/llama-4-maverick-17b-128e-instruct"].label = "LLaMA 
 provider.models["meta-llama/llama-4-scout-17b-16e-instruct"].label     = "LLaMA 4 Scout 17B"
 provider.models["groq/compound"].label           = "Compound (with web search)"
 
-if SERVER then
+-- `request` runs on whichever machine holds the player's key: the server
+-- when the local player hosts, otherwise that player's own client.
+if SERVER or CLIENT then
     function provider.request(npc, callback)
         local q = npc._quirks or {}
         local tokField = q.tokens_field or "max_tokens"

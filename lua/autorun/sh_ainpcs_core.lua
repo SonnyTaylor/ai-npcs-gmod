@@ -5,7 +5,7 @@
 ]]
 
 AINPCS = AINPCS or {}
-AINPCS.Version = "4.1.0"
+AINPCS.Version = "4.2.0"
 
 AINPCS.NetStrings = {
     "AINPC_SpawnRequest",
@@ -23,6 +23,9 @@ AINPCS.NetStrings = {
     "AINPC_UpdateNPC",
     "AINPC_LocalRelayReq",
     "AINPC_LocalRelayRes",
+    "AINPC_LLMRequest",
+    "AINPC_LLMReply",
+    "AINPC_SetPersona",
 }
 
 AINPCS.Defaults = {
@@ -149,6 +152,7 @@ if SERVER then
     AddCSLuaFile("autorun/client/cl_2_ainpcs_open.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_browsers.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_setup.lua")
+    AddCSLuaFile("autorun/client/cl_ainpcs_llm.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_mantle_panel.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_panel.lua")
     AddCSLuaFile("autorun/client/cl_ainpcs_interact.lua")
@@ -259,6 +263,105 @@ function AINPCS.IsUsableBodyModel(model)
     if not string.find(string.lower(model), "%.mdl$") then return false end
     if string.find(model, " ") then return false end
     return true
+end
+
+-- Provider response handling (shared so a client-side request parses the same
+-- way a server-side one does).
+
+--- Pull the assistant text out of an OpenAI-compatible, Ollama or Anthropic reply.
+function AINPCS.ExtractReplyContent(response)
+    if not istable(response) then return nil end
+
+    local choices = response.choices
+    if istable(choices) and istable(choices[1]) and istable(choices[1].message) then
+        local content = choices[1].message.content
+        if isstring(content) then return content end
+        if istable(content) then
+            local parts = {}
+            for _, p in ipairs(content) do
+                if istable(p) and isstring(p.text) then parts[#parts + 1] = p.text end
+            end
+            return table.concat(parts, "")
+        end
+    end
+
+    -- Ollama / OpenAI-compatible non-choices shape
+    if istable(response.message) and isstring(response.message.content) then
+        return response.message.content
+    end
+
+    -- Anthropic messages API
+    if istable(response.content) then
+        local parts = {}
+        for _, block in ipairs(response.content) do
+            if istable(block) and block.type == "text" and isstring(block.text) then
+                parts[#parts + 1] = block.text
+            end
+        end
+        if #parts > 0 then return table.concat(parts, "") end
+    end
+
+    return nil
+end
+
+--- Human-readable error text from a provider's error payload.
+function AINPCS.ExtractProviderError(response)
+    if not istable(response) then return nil end
+    local err = response.error
+    if isstring(err) then return err end
+    if istable(err) then
+        if isstring(err.message) then return err.message end
+        if err.message ~= nil then return tostring(err.message) end
+        if err.code ~= nil then return tostring(err.code) end
+        return "provider returned an error"
+    end
+    if isstring(response.message) then return response.message end
+    if isstring(response.detail) then return response.detail end
+    return nil
+end
+
+--- Turn whatever the model actually emitted into something safe to say out loud.
+---
+--- The common failure is a reply that *should* have been JSON but was truncated,
+--- wrapped in a code fence, or missing a brace, so ParseJSONLoose returns nil. The
+--- old fallback spoke the raw text, which is how models end up reading their own
+--- {"thought": "..."} scaffolding aloud. This strips that first.
+function AINPCS.CleanSpokenText(raw)
+    if not isstring(raw) or raw == "" then return "" end
+
+    local text = AINPCS.CleanModelText(raw)
+    local looksJSON = string.find(text, "^%s*{") ~= nil
+    local hasSayKey = string.find(text, "[\"']say[\"']%s*:") ~= nil
+
+    if looksJSON or hasSayKey then
+        -- Prefer the spoken field. Truncated replies are common, so an
+        -- unterminated value is accepted as well as a properly closed one.
+        local sayField =
+            string.match(text, "[\"']say[\"']%s*:%s*[\"'](.-)[\"']%s*[,}]") or
+            string.match(text, "[\"']say[\"']%s*:%s*[\"'](.-)$") or
+            string.match(text, "[\"']say[\"']%s*:%s*[\"']([^\"']*)")
+
+        if isstring(sayField) and AINPCS.Trim(sayField) ~= "" then
+            text = sayField
+        elseif looksJSON then
+            -- Shell and actions but nothing to say: stay silent rather than read
+            -- the scaffolding out loud.
+            return ""
+        else
+            -- "say": null, or a broken value inside otherwise ordinary text.
+            text = string.gsub(text, "[\"']say[\"']%s*:%-?[%w%.]+", " ")
+        end
+    end
+
+    text = string.gsub(text, "<[^>]->", " ")
+    text = AINPCS.CleanText(text, 480)
+
+    if text == "" or text == "{" or text == "}" or text == "[]"
+        or text == "null" or text == "nil" then
+        return ""
+    end
+
+    return text
 end
 
 -- Strict JSON parse that swallows nil gracefully (with ignoreLimits = true).

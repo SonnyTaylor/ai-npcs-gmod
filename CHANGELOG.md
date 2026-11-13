@@ -3,6 +3,53 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [4.2.0] — they remember you, and they cost less
+
+### New — memory that survives
+
+- **Persistent character profiles** (`data/ai_npc/profiles/<id>.json`). An NPC is
+  keyed to a **stable profile id — the saved character's id, never the entity
+  index** — so memories, opinions, notes and kill/death counts survive death,
+  respawn, map changes and the duplicator. Writes are debounced (8s) and forced on
+  removal and cleanup. `sanitizeProfile()` repairs older or hand-edited files
+  instead of crashing on them.
+- **Player personas** (`data/ai_npc/personas.json`): a Settings box where you say
+  what NPCs should call you and a line about yourself. Included in every NPC's
+  situation report, so they stop guessing from your Steam name.
+- Kills and deaths are counted per profile and fed back to the model.
+- `ainpc_spawn <name>` re-spawns a saved character from its profile, memory intact.
+
+### New — your key stays on your PC
+
+- **Client-side generation.** On a server you do not host, the server builds the
+  prompt and sends it to *your* game, which makes the provider call with *your*
+  key and returns only the finished line. The server never sees the key.
+  Singleplayer and listen-server hosting are unchanged: the key never travels at
+  all there, so generation stays server-side.
+- `ainpc_fish_key` lets a dedicated-server owner supply the key used to render
+  character voices, since those are rendered once for everyone.
+
+### New — cost control
+
+- `ainpc_max_rpm` (20/NPC) and `ainpc_global_rpm` (60/server) rate-limit requests;
+  the automatic reactions (being attacked, witnessing a death) make calls nobody
+  asked for.
+- `ainpc_status` reports per-NPC provider/model, request rate, estimated tokens
+  and whether the key is held server-side or client-side.
+- A rejected key or missing model pauses unprompted calls for two minutes instead
+  of retrying on every event.
+
+### Fixed
+
+- **A reply that failed to parse as JSON could be read aloud verbatim**, including
+  the `{"thought": ...}` scaffolding — the most-reported bug in comparable addons.
+  `AINPCS.CleanSpokenText()` now recovers the `say` field from truncated JSON and
+  stays silent when there is nothing to say.
+- **No navmesh produced silent failure.** Spawning on a map without one now says
+  so instead of leaving NPCs unable to follow.
+- `ainpc_debug` is its own convar (`1` prompts/replies, `2` full payloads) rather
+  than requiring `developer`.
+
 ## [4.1.0] — voices work out of the box, NPCs know what is happening
 
 ### New — guided setup

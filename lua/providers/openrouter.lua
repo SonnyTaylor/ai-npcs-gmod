@@ -70,7 +70,7 @@ provider.models = {
     ["liquid/lfm-3-1.7b:free"]                 = defaults("LFM 3 1.7B (free, tiny)", 32768, false, false),
 }
 
-if SERVER then
+if SERVER or CLIENT then
     local function buildBody(npc)
         local q = npc._quirks or {}
         local tokField = q.tokens_field or "max_tokens"
@@ -113,6 +113,9 @@ if SERVER then
         })
     end
 
+end
+
+if SERVER then
     -- ----------------------------------------------------------------
     -- Live free-model fetch. Runs on startup + once every 24h.
     -- Results are merged back into provider.models and a copy is sent

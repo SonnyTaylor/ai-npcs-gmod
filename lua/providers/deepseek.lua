@@ -23,7 +23,9 @@ provider.models = {
     },
 }
 
-if SERVER then
+-- `request` runs on whichever machine holds the player's key: the server
+-- when the local player hosts, otherwise that player's own client.
+if SERVER or CLIENT then
     function provider.request(npc, callback)
         local q = npc._quirks or {}
         local tokField = q.tokens_field or "max_tokens"

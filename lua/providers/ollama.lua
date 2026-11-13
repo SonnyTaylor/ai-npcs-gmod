@@ -50,7 +50,9 @@ provider.models = {
     ["mistral:7b"]     = preset("Mistral 7B (local)", false),
 }
 
-if SERVER then
+-- `request` runs on whichever machine holds the player's key: the server
+-- when the local player hosts, otherwise that player's own client.
+if SERVER or CLIENT then
     function provider.request(npc, callback)
         local rawHost = npc.hostname
         if not rawHost or AINPCS.Trim(rawHost) == "" then

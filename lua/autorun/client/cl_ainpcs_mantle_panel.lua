@@ -1319,6 +1319,29 @@ local function buildSettingsPage(page)
     -- Fallback voice
     -- =========================================================================
 
+    section("How AI NPCs see you",
+        "Optional. Your name and a line about you go to every AI NPC on this server.")
+
+    local pn = AINPCS.Settings.persona or {}
+
+    local pNameRow = row(38)
+    local pNameBox = textEntry(pNameRow, cw, "What should they call you? (defaults to your Steam name)")
+    pNameBox:Dock(LEFT)
+    pNameBox:SetValue(pn.name or "")
+
+    local pAboutRow = row(96)
+    local pAboutBox = textEntry(pAboutRow, cw, "A line about you…", 92)
+    pAboutBox:Dock(LEFT)
+    pAboutBox:SetValue(pn.about or "")
+
+    local pSaveRow = row(36)
+    local pSaveBtn = btn(pSaveRow, "Save", 120, false)
+    pSaveBtn.DoClick = function()
+        UI.click()
+        AINPCS.SavePersona(pNameBox:GetValue(), pAboutBox:GetValue())
+        AINPCS.PushToast("Saved — AI NPCs will use that from now on.", "success")
+    end
+
     section("Fallback voice",
         "Used when an NPC has no character voice, or when the voice service is down.")
 
