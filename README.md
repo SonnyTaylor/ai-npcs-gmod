@@ -39,7 +39,7 @@ Spawn NPCs in Garry's Mod that you can actually talk to. Supports multiple AI pr
 | Provider | Free? | Region blocks | Get a key |
 |---|---|---|---|
 | **Groq** | Yes — daily rate limit on free tier, no credit card required | None known | https://console.groq.com/keys |
-| **OpenRouter** | Many `:free` models available, ~50 req/day without credits, ~1000/day with a one-time $10 top-up | None known | https://openrouter.ai/keys |
+| **OpenRouter** | Many `:free` models available, ~50 req/day without credits, ~1000/day with a one-time $10 top-up. Tick "Free models only" off to see the paid catalog — the default for paying users is `deepseek/deepseek-v4.1-flash-1017` ($0.15/M in, $0.60/M out, 1M context) | None known | https://openrouter.ai/keys |
 | **OpenAI** | Paid only (~$5 minimum top-up) | Russia, China, Iran, others | https://platform.openai.com/api-keys |
 | **DeepSeek** | Paid only (very cheap, ~$0.14/M tokens) | None known | https://platform.deepseek.com/api_keys |
 | **Ollama** | Completely free (runs on your own computer) | N/A — self-hosted | https://ollama.com/download |

@@ -3,6 +3,18 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [2.3.0]
+
+### Added
+- **Paid models on OpenRouter.** The live catalog now includes paid models, not just
+  `:free` ones, with per-million-token prices in the dropdown.
+- **"Free models only" toggle** (default on) in the model section. Unticking it is
+  the "I'm happy to pay" switch: it reveals the paid catalog and preselects the
+  provider's `defaultModel`.
+- `provider.defaultModel` — OpenRouter's is `deepseek/deepseek-v4.1-flash-1017`
+  ($0.15/M in, $0.60/M out, 1M context), kept in the static model list too so it is
+  selectable before the first live fetch.
+
 ## [2.2.0]
 
 ### Added

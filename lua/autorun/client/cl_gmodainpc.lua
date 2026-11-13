@@ -63,6 +63,7 @@ local defaultSettings = {
     reasoning   = nil,
     name        = "",
     firstRun    = true,
+    freeOnly    = true,      -- OpenRouter: hide paid models until the user opts in
 }
 
 local function loadSettings()
@@ -418,6 +419,19 @@ function AINPCS.OpenConfigPanel()
     modelFilter:SetPlaceholderText("Filter models…")
     modelFilter.OnValueChange = function(_, value)
         modelFilterText = string.lower(AINPCS.Trim(value or ""))
+        if populateModels then populateModels() end
+    end
+
+    -- Unticking this is the "I'm happy to pay" switch: it reveals the paid catalog
+    -- and preselects the provider's defaultModel (cheap + fast DeepSeek on OpenRouter).
+    local freeOnlyCheck = vgui.Create("DCheckBoxLabel", modelSection)
+    freeOnlyCheck:Dock(TOP)
+    freeOnlyCheck:SetText("Free models only")
+    freeOnlyCheck:SetValue(Settings.freeOnly ~= false)
+    if freeOnlyCheck.Label then freeOnlyCheck.Label:SetTextColor(labelColor) end
+    freeOnlyCheck:DockMargin(0, 0, 0, 6)
+    freeOnlyCheck.OnChange = function(_, value)
+        Settings.freeOnly = value
         if populateModels then populateModels() end
     end
 
@@ -787,31 +801,58 @@ function AINPCS.OpenConfigPanel()
         local order, models = getModelMap(currentProviderId)
         local p = providers.get(currentProviderId)
 
-        if order and #order > 0 then
-            modelDropdown:SetVisible(true)
-            local filter = modelFilterText or ""
-            local shown = 0
-            local currentVisible = false
-            for _, id in ipairs(order) do
+        local isOpenRouter = (currentProviderId == "openrouter")
+        freeOnlyCheck:SetVisible(isOpenRouter)
+        local freeOnly = isOpenRouter and (Settings.freeOnly ~= false)
+        local filter = modelFilterText or ""
+
+        local function collect(filterText)
+            local out = {}
+            for _, id in ipairs(order or {}) do
                 local m = models[id]
                 if m then
-                    local label = m.label or id
-                    if filter == "" or string.find(string.lower(label .. " " .. id), filter, 1, true) then
-                        modelDropdown:AddChoice(label, id, id == currentModelId)
-                        shown = shown + 1
-                        if id == currentModelId then currentVisible = true end
+                    local isFree = (m.free ~= false)  -- static entries predate the flag
+                    if not freeOnly or isFree then
+                        local label = m.label or id
+                        if filterText == "" or string.find(string.lower(label .. " " .. id), filterText, 1, true) then
+                            local shown = label
+                            if not isFree then
+                                shown = string.format("%s  ·  $%.2f/$%.2f per M", label,
+                                    tonumber(m.price_in) or 0, tonumber(m.price_out) or 0)
+                            end
+                            table.insert(out, { id = id, label = shown })
+                        end
                     end
                 end
             end
+            return out
+        end
 
-            if shown == 0 then
-                modelDropdown:SetVisible(false)
-            elseif not currentVisible then
-                -- Only auto-pick when nothing is selected or the selection is gone.
-                if not currentModelId or not models[currentModelId] then
-                    currentModelId = order[1]
-                    modelDropdown:ChooseOptionID(1)
-                end
+        local visible = collect(filter)
+        -- A filter that matches nothing (or a paid-only list while "free only" is
+        -- ticked) must not blank the picker; fall back to the unfiltered list.
+        if #visible == 0 and #(order or {}) > 0 then
+            visible = collect("")
+        end
+
+        if #visible > 0 then
+            modelDropdown:SetVisible(true)
+
+            local labelFor, firstId, firstLabel = {}, nil, nil
+            for _, v in ipairs(visible) do
+                labelFor[v.id] = v.label
+                firstId = firstId or v.id
+                firstLabel = firstLabel or v.label
+                modelDropdown:AddChoice(v.label, v.id, v.id == currentModelId)
+            end
+
+            -- Nothing selected, stale selection, or a paid model while "free only"
+            -- is ticked -> fall back to the provider's defaultModel, then the first row.
+            if not labelFor[currentModelId] then
+                local preferred = p and p.defaultModel
+                local target = (preferred and labelFor[preferred]) and preferred or firstId
+                currentModelId = target
+                modelDropdown:ChooseOption(labelFor[target] or firstLabel)
             end
 
             modelCustomEntry:SetVisible(p and p.allowCustomModel == true)
@@ -820,8 +861,9 @@ function AINPCS.OpenConfigPanel()
             end
             applyModelSettings(models[currentModelId])
         else
+            local allowCustom = p and p.allowCustomModel == true
             modelDropdown:SetVisible(false)
-            modelCustomEntry:SetVisible(true)
+            modelCustomEntry:SetVisible(allowCustom)
             modelCustomEntry:SetText(Settings.model or "")
             applyModelSettings(nil)
         end
@@ -830,8 +872,8 @@ function AINPCS.OpenConfigPanel()
         hostnameLabel:SetVisible(showHost)
         hostnameEntry:SetVisible(showHost)
 
-        -- The hardcoded list rotates; ask the server for today's free models.
-        if currentProviderId == "openrouter" and not LiveOpenRouterModels then
+        -- The hardcoded list rotates; ask the server for today's catalog.
+        if isOpenRouter and not LiveOpenRouterModels then
             requestOpenRouterModels()
         end
 

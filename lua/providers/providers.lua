@@ -6,6 +6,7 @@
       provider.getKeyUrl   (string, URL users open to get a free API key)
       provider.modelOrder  (array of model ids, optional)
       provider.models      (map of id → { label, max_tokens, temperature, reasoning, tool_support })
+      provider.defaultModel (optional id preselected in the panel when nothing else fits)
       provider.request     (server-only function: request(npc, callback))
       provider.refresh     (optional, server-only, refreshes model list at runtime)
 ]]

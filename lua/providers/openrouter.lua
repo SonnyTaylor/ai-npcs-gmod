@@ -10,7 +10,11 @@ local provider = {}
 provider.id       = "openrouter"
 provider.label    = "OpenRouter (free models available)"
 provider.getKeyUrl = "https://openrouter.ai/keys"
-provider.note     = "Free models rotate. Sign up and get a key, then pick a :free model."
+provider.note     = "Free models rotate. Tick \"Free only\" below to hide paid models; untick it if you are happy to spend a little."
+
+-- Paid default for people with credits: cheap and fast (1M context). The panel
+-- preselects this as soon as "Free only" is unticked.
+provider.defaultModel = "deepseek/deepseek-v4.1-flash-1017"
 
 -- Fallback preset — used only if the live fetch fails. These are genuinely free
 -- and text-only as of 2026-11; the live fetch supersedes them, and the previous
@@ -26,11 +30,15 @@ provider.modelOrder = {
     "dots-studio/dots-3-note-preview:free",
     "recursive/flint-v1.0:free",
     "liquid/lfm-3-1.7b:free",
+    "deepseek/deepseek-v4.1-flash-1017",
 }
 
 local function defaults(label, ctxMax, reasoning, tools)
     return {
         label = label,
+        free = true,
+        price_in = 0,
+        price_out = 0,
         max_tokens   = { min = 64, max = math.min(ctxMax or 8192, 32768), default = 2048 },
         temperature  = { min = 0, max = 2, default = 1 },
         reasoning    = reasoning and { "low", "medium", "high" } or nil,
@@ -39,6 +47,17 @@ local function defaults(label, ctxMax, reasoning, tools)
 end
 
 provider.models = {
+    -- Paid default, kept in the static list so it is selectable before the first
+    -- live fetch lands. Hidden while "Free models only" is ticked.
+    ["deepseek/deepseek-v4.1-flash-1017"] = {
+        label = "DeepSeek V4.1 Flash (cheap + fast)",
+        free = false,
+        price_in = 0.15,
+        price_out = 0.60,
+        max_tokens  = { min = 64, max = 32768, default = 2048 },
+        temperature = { min = 0, max = 2, default = 1 },
+        tool_support = true,
+    },
     ["openrouter/free"]                        = defaults("Free Models Router (auto-pick)", 200000, true, true),
     ["nvidia/nemotron-3-ultra-550b-a55b:free"] = defaults("Nemotron 3 Ultra 550B (free, reasoning)", 200000, true, true),
     ["nvidia/nemotron-3.5-lightning:free"]     = defaults("Nemotron 3.5 Lightning (free, fast)", 200000, true, true),
@@ -148,9 +167,9 @@ if SERVER then
                     return
                 end
 
-                local freeList    = {}
-                local freeOrder   = {}
-                local freeModels  = {}
+                local allList   = {}
+                local allModels = {}
+                local paidCount = 0
 
                 for _, m in ipairs(parsed.data) do
                     local id = m.id or ""
@@ -168,7 +187,7 @@ if SERVER then
                         end
                     end
 
-                    if textOnly and promptPrice == 0 and complPrice == 0 and id ~= "" then
+                    if textOnly and id ~= "" then
                         local sp = m.supported_parameters or {}
                         local hasReasoning, hasTools = false, false
                         for _, p in ipairs(sp) do
@@ -180,9 +199,16 @@ if SERVER then
                         local nameLabel = m.name or id
                         if #nameLabel > 60 then nameLabel = string.sub(nameLabel, 1, 57) .. "…" end
 
+                        local free = (promptPrice == 0 and complPrice == 0)
+                        if not free then paidCount = paidCount + 1 end
+
                         local entry = {
                             id = id,
                             label = nameLabel,
+                            free = free,
+                            -- per million tokens, for the panel's price hint
+                            price_in  = promptPrice * 1000000,
+                            price_out = complPrice * 1000000,
                             max_tokens   = { min = 64, max = math.min(ctx, 32768), default = 2048 },
                             temperature  = { min = 0, max = 2, default = 1 },
                             tool_support = hasTools,
@@ -190,44 +216,54 @@ if SERVER then
                         if hasReasoning then
                             entry.reasoning = { "low", "medium", "high" }
                         end
-                        freeModels[id] = entry
-                        table.insert(freeList, entry)
+                        allModels[id] = entry
+                        table.insert(allList, entry)
                     end
                 end
 
-                -- Sort: openrouter/free first, then by id
-                table.sort(freeList, function(a, b)
+                -- Free first (openrouter/free at the very top), then paid by input price:
+                -- cheap-and-fast models land near the top of the paid block.
+                table.sort(allList, function(a, b)
                     if a.id == "openrouter/free" then return true end
                     if b.id == "openrouter/free" then return false end
+                    if a.free ~= b.free then return a.free end
+                    if not a.free and a.price_in ~= b.price_in then return a.price_in < b.price_in end
                     return a.id < b.id
                 end)
 
-                for _, entry in ipairs(freeList) do
-                    table.insert(freeOrder, entry.id)
+                -- Keep the net payload sane (~50KB); free models are never truncated.
+                local allOrder = {}
+                local MAX_MODELS = 400
+                for _, entry in ipairs(allList) do
+                    if #allOrder >= MAX_MODELS and not entry.free then break end
+                    table.insert(allOrder, entry.id)
                 end
 
-                if #freeOrder > 0 then
+                if #allOrder > 0 then
                     -- Always include the auto-router even if the API skipped it
-                    if not freeModels["openrouter/free"] then
+                    if not allModels["openrouter/free"] then
                         local r = {
                             id = "openrouter/free",
                             label = "Free Models Router (auto-pick)",
+                            free = true,
+                            price_in = 0,
+                            price_out = 0,
                             max_tokens  = { min = 64, max = 32768, default = 2048 },
                             temperature = { min = 0, max = 2, default = 1 },
                             tool_support = true,
                         }
-                        freeModels["openrouter/free"] = r
-                        table.insert(freeOrder, 1, "openrouter/free")
+                        allModels["openrouter/free"] = r
+                        table.insert(allOrder, 1, "openrouter/free")
                     end
 
-                    provider.modelOrder = freeOrder
-                    provider.models     = freeModels
+                    provider.modelOrder = allOrder
+                    provider.models     = allModels
                     provider._fetchedAt = os.time()
                     provider._fetchedList = {
-                        order  = freeOrder,
-                        models = freeModels,
+                        order  = allOrder,
+                        models = allModels,
                     }
-                    AINPCS.DebugPrint("[AI-NPCs][OpenRouter] loaded " .. #freeOrder .. " free models")
+                    AINPCS.DebugPrint("[AI-NPCs][OpenRouter] loaded " .. #allOrder .. " models (" .. paidCount .. " paid)")
                     broadcastModels()
                     if onDone then onDone(true) end
                 else
