@@ -14,9 +14,13 @@ Nothing breaks for anyone who never installs it.
 ### New — the interface
 
 - **Mantle panel** (`lua/autorun/client/cl_ainpcs_mantle_panel.lua`): frame, tabs,
-  Library as a sortable table with a right-click menu, the five-step Create wizard
-  with a live 3D body preview and Mantle's modal model picker, and the full
-  Settings form.
+  Library as a sortable table, the five-step Create wizard with a live 3D body
+  preview and Mantle's modal model picker, and the full Settings form.
+- **Library actions you can actually find.** Clicking a row selects it; the footer
+  offers Spawn / Edit / Delete (right-click is the same menu). Delete arms on the
+  first press and confirms on the second, because a footer button is easy to hit
+  by accident. Previously clicking a row spawned immediately, so deleting a
+  character meant spawning it first or knowing about a hidden right-click menu.
 - **Routing** in `cl_2_ainpcs_open.lua`: one `AINPCS.Open()` for the concommand,
   the C-menu icon and the desktop icon. `AINPCS.OpenClassic()` is the v3.1 panel,
   unchanged apart from bug fixes.
@@ -31,6 +35,21 @@ The chat window, the 3D nametag/thinking bubble and the toasts still use their v
 rendering, and the radial action menu is not built yet. See `MANTLE_PLAN.md` for
 the remaining phases.
 
+
+### Fixed — the NPC treated your nickname as something you said
+
+Player messages were sent as `"[salami nipples]: hi"`, so the nickname arrived
+inside the utterance and models answered it literally ("did you just say salami
+nipples?"). The name is now kept out of the message body entirely: it goes into the
+system prompt as "you are talking to a player whose account name is …", with an
+instruction not to repeat or react to it, and it is sanitised so a crafted
+nickname cannot fake a second speaker.
+
+### Fixed — voice search crashed with "attempt to call global 'readDataTable'"
+
+The file helpers that replaced the HTTP voice list were declared after their first
+user, so the local was out of scope and Lua resolved a nil global. Voice search in
+the Create wizard threw on every step change.
 
 ### Fixed — the actual root cause: Garry's Mod blocks HTTP to loopback
 

@@ -251,6 +251,7 @@ local function spawnAINPC(ply, data)
         voiceId     = voiceId,
         name        = displayName,
         personality = personality,
+        basePrompt  = systemPrompt,
         history     = {
             { role = "system", content = systemPrompt },
         },
@@ -364,6 +365,22 @@ local function dropPendingUserTurn(rec, text)
     end
 end
 
+--- A player's nickname is account data, not dialogue. The old code prefixed it
+--- into the message body ("[salami nipples]: hi"), so models read the name as part
+--- of what the player said and answered things like "did you just say salami
+--- nipples?". Keep it out of the content, sanitise it, and tell the model what it
+--- is instead.
+local function speakerName(ply)
+    if not IsValid(ply) then return nil end
+
+    local nick = AINPCS.Trim(ply:Nick() or "")
+    nick = string.gsub(nick, "[\r\n\"\\]", "")
+    if nick == "" then return "player" end
+    if #nick > 32 then nick = string.sub(nick, 1, 32) end
+
+    return nick
+end
+
 local function sendMessageToNPC(rec, role, text, asker)
     if not IsValid(rec.ent) then
         if IsValid(asker) then sendToast(asker, "That NPC is gone.", "error") end
@@ -382,6 +399,27 @@ local function sendMessageToNPC(rec, role, text, asker)
             sendToast(asker, (rec.name or "That NPC") .. " is still thinking — give it a second.", "info")
         end
         return
+    end
+
+    -- Refresh who is speaking in the system prompt rather than inside the
+    -- utterance. The base prompt is stored at spawn so the line can be replaced
+    -- each turn instead of accumulating.
+    if role == "user" and rec.history[1] and rec.history[1].role == "system" then
+        local who  = speakerName(asker)
+        local base = rec.basePrompt
+
+        -- base is nil only for an NPC spawned before this field existed; skip the
+        -- line rather than concatenating nil.
+        if base then
+            if who then
+                rec.history[1].content = base ..
+                    "\n\nYou are talking to a player whose account name is \"" .. who ..
+                    "\". That is a name, not something they said: do not repeat it, quote it " ..
+                    "or react to it as if it were part of the conversation."
+            else
+                rec.history[1].content = base
+            end
+        end
     end
 
     table.insert(rec.history, { role = role, content = text })
@@ -534,7 +572,7 @@ net.Receive("AINPC_ChatRequest", function(len, ply)
         return
     end
 
-    sendMessageToNPC(rec, "user", "[" .. ply:Nick() .. "]: " .. msg, ply)
+    sendMessageToNPC(rec, "user", msg, ply)
 end)
 
 -- =============================================================================
@@ -577,7 +615,7 @@ hook.Add("PlayerSay", "AINPC_ChatHandler", function(ply, text)
             return ""
         end
         if not chatAllowed(ply) then return "" end
-        sendMessageToNPC(rec, "user", "[" .. ply:Nick() .. "]: " .. msg, ply)
+        sendMessageToNPC(rec, "user", msg, ply)
         return ""
     end
 
@@ -586,7 +624,7 @@ hook.Add("PlayerSay", "AINPC_ChatHandler", function(ply, text)
     if CV_PROXIMITY:GetBool() and anyNPCs then
         local rec = findNearestNPCForPlayer(ply, CV_PROXIMITY_R:GetFloat())
         if rec and chatAllowed(ply) then
-            sendMessageToNPC(rec, "user", "[" .. ply:Nick() .. "]: " .. text, ply)
+            sendMessageToNPC(rec, "user", text, ply)
         end
     end
 end)

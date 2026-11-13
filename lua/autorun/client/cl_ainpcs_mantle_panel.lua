@@ -236,7 +236,7 @@ end
 -- =============================================================================
 
 local function buildLibraryPage(page)
-    pageHeading(page, "Library", "Saved characters, one click to spawn.")
+    pageHeading(page, "Library", "Pick a character, then spawn, edit or delete it.")
 
     -- Footer before the table: a FILL sibling created first would eat the space.
     local footer = vgui.Create("EditablePanel", page)
@@ -244,11 +244,22 @@ local function buildLibraryPage(page)
     footer:SetTall(38)
     footer:DockMargin(0, 10, 0, 0)
 
-    local newBtn = vgui.Create("MantleBtn", footer)
-    newBtn:SetTxt("+  New character")
-    newBtn:SetWide(UI.w(200))
-    newBtn:DockMargin(0, 2, 0, 2)
-    newBtn:Dock(LEFT)
+    local function footerButton(text, width)
+        local b = vgui.Create("MantleBtn", footer)
+        b:SetTxt(text)
+        b:SetWide(UI.w(width))   -- callers pass raw 1920-space pixels
+        b:DockMargin(0, 2, 8, 2)
+        b:Dock(LEFT)
+        return b
+    end
+
+    local newBtn   = footerButton("+  New", 120)
+    local spawnBtn = footerButton("Spawn",  100)
+    local editBtn  = footerButton("Edit",   90)
+    local delBtn   = footerButton("Delete", 100)
+
+    delBtn:SetColor(Color(120, 46, 46))
+    delBtn:SetColorHover(Color(158, 58, 58))
 
     local hint = label(footer, "", "Fated.14", UI.col("gray"))
     hint:Dock(FILL)
@@ -269,7 +280,7 @@ local function buildLibraryPage(page)
     -- Empty state. MantleTable has no placeholder slot, so this label floats over
     -- it and follows the table's geometry each frame (the table is docked FILL,
     -- so its position is not known until layout runs).
-    local empty = label(page, "Nothing saved yet — press “+ New character” to build one.",
+    local empty = label(page, "Nothing saved yet — press “+ New” to build one.",
         "Fated.16", UI.col("gray"))
     empty:SetAlign(TEXT_ALIGN_CENTER)
     empty:SetMouseInputEnabled(false)
@@ -280,6 +291,44 @@ local function buildLibraryPage(page)
         s:SetSize(tbl:GetWide(), 30)
     end
 
+    -- Selecting is a separate act from spawning now. Clicking a row used to spawn
+    -- immediately, which left no way to reach a character without spawning it —
+    -- deleting one meant spawning it first, or discovering the right-click menu.
+    local selected = nil
+    local armedDelete = false
+    local disarmTimer = "AINPC_LibraryDisarmDelete"
+
+    local function selectedIndex()
+        for i, entry in ipairs(AINPCS.Library) do
+            if entry == selected then return i end
+        end
+        return nil
+    end
+
+    local function setSelected(entry, index)
+        selected = entry
+        armedDelete = false
+        delBtn:SetTxt("Delete")
+        delBtn:SetColor(Color(120, 46, 46))
+        delBtn:SetColorHover(Color(158, 58, 58))
+
+        if entry then
+            if index then tbl:SetSelectedRow(index) end
+            hint:SetText(string.format("selected: %s", tostring(entry.name or "?")))
+        else
+            tbl:ClearSelection()
+            hint:SetText(#AINPCS.Library == 0
+                and "Saved characters can be spawned again any time."
+                or string.format("%d saved. Click a row to select it.", #AINPCS.Library))
+        end
+    end
+
+    local function requireSelection()
+        if selected then return true end
+        AINPCS.PushToast("Select a character in the list first.", "info")
+        return false
+    end
+
     local function spawnEntry(entry)
         if not entry then return end
         UI.click()
@@ -288,9 +337,18 @@ local function buildLibraryPage(page)
 
     local function deleteEntry(entry)
         if not entry then return end
+
+        local name = tostring(entry.name or "Character")
         AINPCS.RemoveLibraryEntry(entry.id)
+
+        selected = nil
+        armedDelete = false
+        delBtn:SetTxt("Delete")
+        delBtn:SetColor(Color(120, 46, 46))
+        delBtn:SetColorHover(Color(158, 58, 58))
+
         AINPCS.RebuildLibrary()
-        AINPCS.PushToast((entry.name or "Character") .. " deleted.", "info")
+        AINPCS.PushToast(name .. " deleted.", "info")
     end
 
     newBtn.DoClick = function()
@@ -298,12 +356,56 @@ local function buildLibraryPage(page)
         AINPCS.NewCharacter()
     end
 
-    -- OnAction/OnRightClick are plain functions: (rowData, rowIndex).
-    tbl:SetAction(function(row) spawnEntry(row.entry) end)
+    spawnBtn.DoClick = function()
+        if requireSelection() then spawnEntry(selected) end
+    end
 
-    tbl:SetRightClickAction(function(row)
-        local entry = row.entry
+    editBtn.DoClick = function()
+        if requireSelection() then
+            UI.click()
+            AINPCS.EditEntry(selected)
+        end
+    end
+
+    -- Two-step: the footer button is easy to hit by accident, so the first press
+    -- only arms it. The right-click menu deletes in one step, which is fine —
+    -- there the intent is explicit.
+    delBtn.DoClick = function()
+        if not requireSelection() then return end
+
+        if not armedDelete then
+            armedDelete = true
+            UI.click("ui/buttonclick.wav")
+            delBtn:SetTxt("Confirm")
+            delBtn:SetColor(Color(190, 60, 60))
+            delBtn:SetColorHover(Color(220, 80, 80))
+            hint:SetText(string.format("press Delete again to remove “%s”", tostring(selected.name or "?")))
+
+            timer.Create(disarmTimer, 4, 1, function()
+                if not IsValid(delBtn) then return end
+                armedDelete = false
+                delBtn:SetTxt("Delete")
+                delBtn:SetColor(Color(120, 46, 46))
+                delBtn:SetColorHover(Color(158, 58, 58))
+            end)
+            return
+        end
+
+        timer.Remove(disarmTimer)
+        UI.click()
+        deleteEntry(selected)
+    end
+
+    -- OnAction/OnRightClick are plain functions: (rowData, rowIndex).
+    tbl:SetAction(function(row, index)
+        if row and row.entry then setSelected(row.entry, index) end
+    end)
+
+    tbl:SetRightClickAction(function(row, index)
+        local entry = row and row.entry
         if not entry then return end
+
+        setSelected(entry, index)
 
         local menu = Mantle.ui.derma_menu()
         menu:AddOption("Spawn", function() spawnEntry(entry) end, "icon16/user_add.png")
@@ -320,7 +422,11 @@ local function buildLibraryPage(page)
 
         tbl:Clear()
 
-        local count = #AINPCS.Library
+        -- A saved entry survives a rebuild, but its row identity does not, so
+        -- re-select by entry rather than by index.
+        local keep = selected
+        selected = nil
+
         for _, entry in ipairs(AINPCS.Library) do
             local index = tbl:AddItem(
                 entry.name or "?",
@@ -336,10 +442,16 @@ local function buildLibraryPage(page)
             if row then row.entry = entry end
         end
 
-        empty:SetVisible(count == 0)
-        hint:SetText(count == 0
-            and "Saved characters can be spawned again any time."
-            or string.format("%d saved. Click to spawn, right-click for Edit / Delete.", count))
+        local foundIndex = nil
+        if keep then
+            for i, entry in ipairs(AINPCS.Library) do
+                if entry == keep then foundIndex = i break end
+            end
+        end
+
+        setSelected(foundIndex and keep or nil, foundIndex)
+
+        empty:SetVisible(#AINPCS.Library == 0)
     end
 
     AINPCS.RebuildLibrary()

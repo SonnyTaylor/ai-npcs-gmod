@@ -222,6 +222,26 @@ local function relayCall(base, path, method, body, callback)
     HTTP(opts)
 end
 
+local STATUS_FILE  = "ainpc_relay_status.json"
+local STATUS_FRESH = 20      -- seconds; the relay rewrites it every 2s while idle
+
+-- Garry's Mod refuses client HTTP to private networks -- "Requests to local
+-- resources are not allowed" -- unless the game was launched with -allowlocalhttp.
+-- The panel cannot depend on a launch parameter, so the two control operations go
+-- through files in garrysmod/data: the relay publishes the voice list, and picks up
+-- key changes the panel writes. Audio is unaffected: sound.PlayURL is BASS, not the
+-- Lua HTTP shim.
+local VOICES_FILE  = "ainpc_relay_voices.json"
+local COMMAND_FILE = "ainpc_relay_command.json"
+
+local function readDataTable(name)
+    if not file.Exists(name, "DATA") then return nil end
+    local raw = file.Read(name, "DATA")
+    if not raw or raw == "" then return nil end
+    local parsed = AINPCS.SafeJSON(raw)
+    return istable(parsed) and parsed or nil
+end
+
 local function relayGet(path, callback)
     relayCall(AINPCS.RelayBase(), path, "get", nil, function(code, raw)
         callback((code == 200) and AINPCS.SafeJSON(raw) or nil, code, raw)
@@ -279,25 +299,6 @@ end
 -- The relay runs on this machine and publishes a heartbeat file next to the game's
 -- data. Reading it is how "is the relay running?" is answered now: no network, no
 -- host-name guessing, and it carries the exact URL the relay bound.
-local STATUS_FILE  = "ainpc_relay_status.json"
-local STATUS_FRESH = 20      -- seconds; the relay rewrites it every 2s while idle
-
--- Garry's Mod refuses client HTTP to private networks -- "Requests to local
--- resources are not allowed" -- unless the game was launched with -allowlocalhttp.
--- The panel cannot depend on a launch parameter, so the two control operations go
--- through files in garrysmod/data: the relay publishes the voice list, and picks up
--- key changes the panel writes. Audio is unaffected: sound.PlayURL is BASS, not the
--- Lua HTTP shim.
-local VOICES_FILE  = "ainpc_relay_voices.json"
-local COMMAND_FILE = "ainpc_relay_command.json"
-
-local function readDataTable(name)
-    if not file.Exists(name, "DATA") then return nil end
-    local raw = file.Read(name, "DATA")
-    if not raw or raw == "" then return nil end
-    local parsed = AINPCS.SafeJSON(raw)
-    return istable(parsed) and parsed or nil
-end
 
 --- (status, error) — status is the parsed file with .age and .fresh added.
 function AINPCS.ReadRelayStatus()
