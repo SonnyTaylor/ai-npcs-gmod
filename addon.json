@@ -16,6 +16,7 @@
     "LICENSE",
     ".gitignore",
     "lua/voices/README.md",
-    "WORKSHOP_DESCRIPTION.txt"
+    "WORKSHOP_DESCRIPTION.txt",
+    "WORKSHOP_CHANGELOG.txt"
   ]
 }

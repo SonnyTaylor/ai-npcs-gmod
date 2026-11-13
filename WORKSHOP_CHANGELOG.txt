@@ -1,0 +1,43 @@
+v4.1 — the setup, voices and awareness update
+
+SETUP IS NOW ONE CLICK
+- New guided setup. Pick a provider, it opens that provider's key page for you, you paste the key and it checks the key actually works before saving it. Fish Audio is the optional second step. Run it again any time from Settings.
+- Groq, OpenRouter, OpenAI, DeepSeek and Ollama all keep their own key, so switching does not lose anything.
+
+NO MORE HELPER PROGRAM
+- Character voices used to need a Python or PowerShell script and a .bat file. That is gone. Everything happens inside the game now.
+- The server renders each spoken line and streams it to everyone nearby, so other players hear the same voice without needing a key of their own.
+- Your key stays on your PC in garrysmod/data/ai_npcs_settings.json.
+
+THEY KNOW WHAT IS GOING ON
+- NPCs are now told their own health, whether they are on fire, what they are doing, what they are holding, who is nearby (distance, direction, health, and whether your gun is pointed at them), what creatures are around, and a running log of recent events like being shot, kills and gunfire.
+- They remember who they have met and how they feel about each person. Be nice to one, or shoot it, and it remembers.
+
+THEY CAN ACT
+- Follow, stay, come, wander, attack, stop attacking, flee, switch or drop weapons, open doors and gesture. Ask in chat, or just let them decide.
+- Choose a starting weapon per character, or leave them unarmed.
+
+VOICES
+- One voice browser that searches all of Fish Audio, sorted by most used. Duplicate uploads of the same character are merged into one row.
+- Every voice with a pre-rendered sample has a Play button that costs nothing, so you can audition before picking.
+- Star a voice to pin it to the top of the list.
+- Mouths now move in time with the voice, and the mood the AI picks shows on its face.
+- Stock Half-Life 2 voice lines are muted on AI NPCs so they stop talking over the AI.
+
+BODIES
+- One browser for NPC models and playermodels, searchable and paged, with a live 3D preview. The old duplicated list plus "browse bodies" pair is gone.
+
+CHAT
+- The chat window keeps its history now, including lines you type in normal chat or with /say.
+- Follow, Stay, Calm Down, Clear Chat and Edit NPC buttons sit right in the chat window, so you can change a spawned character without respawning it.
+- Text appears when the voice starts, instead of racing ahead of it.
+
+FIXED
+- NPCs were named after their spawn class instead of the name you gave them.
+- Your own message appeared twice in the chat window.
+- Panel backgrounds could be see-through over Mantle windows.
+- The body list could stay permanently short.
+- Spawning showed two identical notifications.
+
+REMINDER
+- The interface needs Mantle (3126986993) and the Montserrat font (2924839375). Without them you get the older, plainer menu. It still works, it just does not look like the screenshots.
