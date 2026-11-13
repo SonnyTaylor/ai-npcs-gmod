@@ -33,7 +33,7 @@ local function wrapText(text, maxChars)
     return lines
 end
 
-local function drawNameAbove(ent, name, thinking, speech)
+local function drawNameAbove(ent, name, subLabel, thinking, speech)
     local top = ent:GetPos() + Vector(0, 0, ent:OBBMaxs().z + 12)
     local ang = EyeAngles()
     ang:RotateAroundAxis(ang:Forward(), 90)
@@ -52,7 +52,7 @@ local function drawNameAbove(ent, name, thinking, speech)
         end
 
         draw.SimpleText(name, "AINPC_Name3D", 0, nameY, Color(255, 220, 130), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
-        draw.SimpleText("AI NPC", "AINPC_Sub3D", 0, nameY + 40, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
+        draw.SimpleText(subLabel or "AI NPC", "AINPC_Sub3D", 0, nameY + 40, Color(200, 200, 200), TEXT_ALIGN_CENTER, TEXT_ALIGN_CENTER)
 
         if thinking then
             -- A bubble instead of three floating dots: it reads as "this NPC is
@@ -91,9 +91,13 @@ hook.Add("PostDrawTranslucentRenderables", "AINPC_Nametags", function(depth, sky
                     speech = wrapText(last.text, 44)
                 end
 
+                local act = ent:GetNWString("AINPCActivity", "idle")
+                local subLabel = (act ~= "" and act ~= "idle") and ("AI NPC • " .. act) or "AI NPC"
+
                 drawNameAbove(
                     ent,
-                    ent:GetNWString("AINPCName", "NPC"),
+                    AINPCS.NPCName(ent),
+                    subLabel,
                     ent:GetNWBool("AINPCThinking", false),
                     speech
                 )
@@ -116,7 +120,7 @@ hook.Add("HUDPaint", "AINPC_UsePrompt", function()
     if not ent:GetNWBool("IsAINPC", false) then return end
     if ply:EyePos():Distance(ent:GetPos()) > 180 then return end
 
-    local name = ent:GetNWString("AINPCName", "NPC")
+    local name = AINPCS.NPCName(ent)
     local isThinking = ent:GetNWBool("AINPCThinking", false)
 
     local cx, cy = ScrW() / 2, ScrH() / 2 + 80

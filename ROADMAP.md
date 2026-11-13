@@ -12,7 +12,54 @@ working where it genuinely does.
 
 ---
 
-## v4.0 — the interface (this update)
+## v4.1 — set-up, awareness, and no more relay (this update)
+
+Detail in [`CHANGELOG.md`](CHANGELOG.md).
+
+### Set-up
+- [x] **Guided first-run wizard** (`cl_ainpcs_setup.lua`): pick a provider, open its
+      key page, paste, **verify the key with the provider before saving**, then the
+      optional Fish Audio step. Re-runnable from Settings or `ainpc_setup`.
+- [x] Key checks against each provider's authenticated endpoint (Groq/OpenAI/
+      DeepSeek `/models`, OpenRouter `/key`), with human-readable failures.
+- [x] Sensible `defaultModel` per provider so finishing setup does not leave the
+      model dropdown on whatever happened to be first.
+
+### Voice — the relay is gone
+- [x] **Deleted `relay/` entirely** (`start.bat`, `relay.ps1`, `server.py`). Fish
+      Audio is called directly: the client searches/validates, the **server**
+      synthesises each line and streams it to nearby players in chunks.
+- [x] Built-in keyless voices stay; `relay:<id>` ids normalise to `fish:<id>`.
+- [x] **Voice browser rebuilt** around search: most-used ordering, duplicate
+      uploads collapsed, free pre-rendered `▶ Play` samples, language filter,
+      paging, ★ pins floating to the top of page 1.
+- [x] **Mouth movement + facial expressions** driven by the audio channel's level
+      and the model's `emotion`, using the `GM:MouthMoveAnimation` flexes.
+- [x] Stock HL2 voice lines suppressed on AI NPCs (`ainpc_mute_hl2_voice`).
+
+### Brain
+- [x] **Situation report** replaces the flat system prompt: health, fire, activity,
+      weapon, nearby players (distance/direction/health/aiming at you), nearby
+      creatures, timestamped event log, multi-speaker transcript.
+- [x] **Per-player memory and affinity**, surfaced back to the model.
+- [x] **Actions** (`follow`, `stay`, `come`, `wander`, `attack`, `stop_attacking`,
+      `flee`, `switch_weapon`, `drop_weapon`, `use`, `gesture`) executed on the
+      NPC's own AI. This supersedes the "requires tool calling" plan in v2.5 —
+      a JSON action list works on every provider, including free tiers and Ollama.
+- [x] Loose JSON parsing + per-model quirk learning (temperature,
+      `max_tokens` vs `max_completion_tokens`, reasoning) with one auto-retry.
+- [x] **One body browser** for NPC classes and playermodels (searchable, paged,
+      icon grid, live preview). The duplicate list + modal picker is gone.
+
+### Still open from v2.x
+- [ ] Retro engines (DECtalk / SAM / espeak-ng) — now a server-side TTS provider
+      rather than a relay endpoint.
+- [ ] Per-NPC pitch/rate.
+- [ ] PvP/friendly tuning per NPC beyond `ainpc_allow_pvp`.
+
+---
+
+## v4.0 — the interface
 
 The C menu becomes a real app instead of one scroll of controls. Spec and phase
 plan: [`MANTLE_PLAN.md`](MANTLE_PLAN.md).
@@ -93,7 +140,7 @@ plan: [`MANTLE_PLAN.md`](MANTLE_PLAN.md).
 
 ---
 
-## v2.2 — voice: the relay and a cloned cast
+## v2.2 — voice: the relay and a cloned cast  *(superseded by v4.1 — the relay was removed; Fish Audio is called in-game)*
 
 Spec: [`lua/voices/README.md`](lua/voices/README.md) (already implements the
 GMod side: `relay:` voices, `ainpc_voice_relay`, per-NPC voice, chunked playback).

@@ -1,0 +1,82 @@
+[h1]AI NPCs — talk to NPCs in Garry's Mod[/h1]
+
+Spawn characters that actually answer you. They speak out loud with a real voice, they know what is happening around them, they remember you, and they can follow, fight, flee or grab a weapon when you ask them to.
+
+Press [b]E[/b] on one, or just type in normal chat when you are near it.
+
+[hr][/hr]
+
+[h2]What's new in v4.1[/h2]
+[list]
+[*][b]Guided setup.[/b] A wizard walks you through getting a free key, opens the signup page for you, and [b]checks the key works before saving it[/b]. Cloned character voices are the optional second step. Run it again any time from Settings.
+[*][b]No helper program.[/b] Character voices used to need a Python or PowerShell script and a .bat file. That is gone — everything happens inside the game now.
+[*][b]They know what is going on.[/b] Their own health, being shot at, being on fire, what they are holding, who is nearby and whether your gun is pointed at them, other creatures around, and a running log of recent events.
+[*][b]They can act.[/b] Follow, stay, come, wander, attack, stop attacking, flee, switch or drop weapons, open doors, wave.
+[*][b]They remember you.[/b] Every NPC keeps its own opinion of every player. Be nice to it, or shoot it, and it will remember.
+[*][b]Mouths move.[/b] Jaw and facial expressions follow the voice, and the emotion the AI picks shows on its face.
+[*][b]Better pickers.[/b] One searchable body browser for NPC models and playermodels with a live 3D preview, and one voice browser with free instant samples.
+[/list]
+
+[h2]Please install Mantle first[/h2]
+The interface is built on [b]Mantle[/b]. Install both of these before anything else:
+[list]
+[*][url=https://steamcommunity.com/sharedfiles/filedetails/?id=3126986993]Mantle[/url]
+[*][url=https://steamcommunity.com/sharedfiles/filedetails/?id=2924839375]Montserrat font[/url] (Mantle asks for it)
+[/list]
+Without them the addon drops back to an older, plainer menu. It still works, it just does not look like the screenshots.
+
+[h2]First time setup — about a minute[/h2]
+[olist]
+[*]Press [b]C[/b] → [b]AI NPCs[/b].
+[*]The setup wizard opens. Pick [b]Groq[/b] — free tier, no credit card.
+[*]Press [b]Open key page[/b], sign in, create a key, paste it back.
+[*]Press [b]Test & save[/b]. It tells you immediately whether the key works.
+[*]Optional: add a [b]Fish Audio[/b] key for cloned character voices. Skip it and NPCs still speak with the free built-in voices.
+[/olist]
+
+[h2]Your first character[/h2]
+[olist]
+[*][b]Library[/b] → [b]+ New character[/b].
+[*]Give it a name and a personality. "A grumpy Russian bartender who secretly likes cats" works a lot better than nothing.
+[*]Pick a voice — anything with a sample can be played instantly, free.
+[*]Pick a body: any NPC model or playermodel, with a live preview.
+[*]Choose a starting weapon, or leave it unarmed.
+[*][b]Save & spawn[/b], then walk up and press [b]E[/b]. [i]/say[/i] works from anywhere.
+[/olist]
+
+[h2]Providers[/h2]
+[list]
+[*][b]Groq[/b] — free tier, no card, very fast. [i]Start here.[/i]
+[*][b]OpenRouter[/b] — hundreds of models, many of them free.
+[*][b]OpenAI[/b] — paid, best quality.
+[*][b]DeepSeek[/b] — cheap.
+[*][b]Ollama[/b] — runs on your own PC, free and private.
+[/list]
+Each provider keeps its own key, so you can switch whenever you like without losing anything.
+
+[h2]Voices[/h2]
+[b]Free, no account:[/b] 13 languages of Google TTS plus retro Microsoft Sam, Mike and Mary.
+
+[b]Fish Audio character voices:[/b] the cloned ones. Search a name (Rick, Barney, GLaDOS…), press play on the free sample, pick the one that sounds right. Fish charges credit per character spoken. Everyone on the server hears the same voice, and only the server needs your key — other players do not need one of their own.
+
+[h2]Server owners[/h2]
+[list]
+[*][code]ainpc_enabled[/code], [code]ainpc_admin_only[/code], [code]ainpc_max_per_player[/code], [code]ainpc_cooldown_seconds[/code]
+[*][code]ainpc_proximity_chat[/code], [code]ainpc_proximity_range[/code], [code]ainpc_interact_range[/code]
+[*][code]ainpc_allow_actions[/code], [code]ainpc_allow_pvp[/code], [code]ainpc_tts_allowed[/code]
+[/list]
+Set [b]ainpc_allow_pvp 0[/b] if you do not want NPCs fighting players.
+
+[h2]If something is not working[/h2]
+[list]
+[*][b]No menu, or an old-looking menu[/b] — install Mantle and the Montserrat font.
+[*][b]"Key rejected"[/b] — copy the key again from the provider's page. The setup wizard tells you straight away.
+[*][b]The NPC does not reply[/b] — check your key in Settings, and check the model still exists; free model lists rotate.
+[*][b]A built-in voice is silent[/b] — try a different one, those hosts rate-limit sometimes.
+[*][b]E does nothing[/b] — you need to be within about 3 metres, and the NPC needs its yellow name tag. Ordinary NPCs are not AI ones.
+[/list]
+
+[hr][/hr]
+Your key is stored on your own PC, in [code]garrysmod/data/ai_npcs_settings.json[/code], and is never shown to other players.
+
+[url=https://github.com/SonnyTaylor/AI-NPCs-GMod]GitHub[/url] · Bugs and ideas go in the Discussions tab, not the comments.

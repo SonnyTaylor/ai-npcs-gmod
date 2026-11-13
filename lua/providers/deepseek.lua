@@ -4,6 +4,7 @@ provider.id       = "deepseek"
 provider.label    = "DeepSeek"
 provider.getKeyUrl = "https://platform.deepseek.com/api_keys"
 provider.note     = "Cheap paid API. Two models: chat (fast) and reasoner (o1-style)."
+provider.defaultModel = "deepseek-chat"
 
 provider.modelOrder = { "deepseek-chat", "deepseek-reasoner" }
 
@@ -24,13 +25,15 @@ provider.models = {
 
 if SERVER then
     function provider.request(npc, callback)
+        local q = npc._quirks or {}
+        local tokField = q.tokens_field or "max_tokens"
         local body = {
             model    = npc.model,
-            messages = npc.history,
-            max_tokens = npc.max_tokens,
+            messages = npc.messages or npc.history,
+            [tokField] = npc.max_tokens,
         }
         -- DeepSeek reasoner ignores temperature; chat uses it.
-        if npc.temperature ~= nil and npc.model ~= "deepseek-reasoner" then
+        if npc.temperature ~= nil and npc.model ~= "deepseek-reasoner" and not q.no_temp then
             body.temperature = npc.temperature
         end
 

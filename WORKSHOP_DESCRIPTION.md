@@ -1,109 +1,94 @@
-# Steam Workshop Description — AI NPCs (v4.0)
+# Steam Workshop Description — AI NPCs (v4.1)
 
-Paste the block below into the Steam Workshop description field. It uses Steam's BBCode variants (`[h1]`, `[h2]`, `[h3]`, `[list]`, `[olist]`, `[b]`, `[i]`, `[url=...]`, `[hr]`).
+Paste everything below the `---` line into the Steam Workshop description field.
+It is Steam BBCode (`[h1]`, `[h2]`, `[list]`, `[olist]`, `[b]`, `[i]`, `[url=...]`,
+`[hr][/hr]`, `[code]`). The same text is in `WORKSHOP_DESCRIPTION.txt` if you just
+want to open and copy it.
 
-Before you paste, upload a new screenshot/GIF showing the E-to-talk chat window and the glowing nametag above the NPC. The old screenshots are misleading.
+Before you paste, upload new screenshots: the wizard, the body browser, the voice
+browser and a chat window mid-conversation. The current ones show the v3 UI.
 
 ---
 
-[h1]AI NPCs — talk to NPCs in Garry's Mod, for free[/h1]
+[h1]AI NPCs — talk to NPCs in Garry's Mod[/h1]
 
-[h2]What's new in v4.0[/h2]
+Spawn characters that actually answer you. They speak out loud with a real voice, they know what is happening around them, they remember you, and they can follow, fight, flee or grab a weapon when you ask them to.
+
+Press [b]E[/b] on one, or just type in normal chat when you are near it.
+
+[hr][/hr]
+
+[h2]What's new in v4.1[/h2]
 [list]
-[*][b]A proper interface.[/b] The C menu is now a library of saved characters, a guided five-step maker with a live 3D body preview, and a settings page that is not a wall of controls. Built on [url=https://github.com/darkfated/mantle]Mantle[/url] — [b]optional[/b], subscribe to [url=https://steamcommunity.com/sharedfiles/filedetails/?id=3126986993]Mantle[/url] and its [url=https://steamcommunity.com/sharedfiles/filedetails/?id=2924839375]Montserrat font[/url] to get it. Without them you get the old panel, which still works; nothing is a hard dependency.
-[*][b]Fixed: "voice service: NOT running" when it is running.[/b] Windows rejected the address the addon was using, which silently broke voice search, playback and key saving too. Fixed, and there is now a console command that says exactly what the addon sees.
-[*][b]Fixed: typed text disappearing.[/b] Names and descriptions commit as you type instead of only on Enter, so a field can no longer come back blank.
+[*][b]Guided setup.[/b] A wizard walks you through getting a free key, opens the signup page for you, and [b]checks the key works before saving it[/b]. Cloned character voices are the optional second step. Run it again any time from Settings.
+[*][b]No helper program.[/b] Character voices used to need a Python or PowerShell script and a .bat file. That is gone — everything happens inside the game now.
+[*][b]They know what is going on.[/b] Their own health, being shot at, being on fire, what they are holding, who is nearby and whether your gun is pointed at them, other creatures around, and a running log of recent events.
+[*][b]They can act.[/b] Follow, stay, come, wander, attack, stop attacking, flee, switch or drop weapons, open doors, wave.
+[*][b]They remember you.[/b] Every NPC keeps its own opinion of every player. Be nice to it, or shoot it, and it will remember.
+[*][b]Mouths move.[/b] Jaw and facial expressions follow the voice, and the emotion the AI picks shows on its face.
+[*][b]Better pickers.[/b] One searchable body browser for NPC models and playermodels with a live 3D preview, and one voice browser with free instant samples.
 [/list]
 
-Spawn an NPC with a custom personality and actually have a conversation with it. Supports multiple AI providers, including two with genuinely free tiers. The old hardcoded "free" API key was long-dead and never worked — v2.0 replaces it with a real onboarding flow that walks you through grabbing your own free key in about 30 seconds.
-
-[h2]What v2.0 fixes[/h2]
+[h2]Please install Mantle first[/h2]
+The interface is built on [b]Mantle[/b]. Install both of these before anything else:
 [list]
-[*][b]Free tier actually works.[/b] Click "Get free Groq key" in the panel, sign up with Google, paste your key back. No credit card required, no region blocks.
-[*][b]Press E to talk[/b] instead of typing [i]/say[/i] every time. You can also just speak in chat when you're near an NPC and it'll respond automatically.
-[*][b]Live 3D nametags[/b] above every AI NPC with a glowing "thinking…" indicator while it waits for a response.
-[*][b]The crashes are gone[/b] ([i]attempt to index nil[/i], [i]pairs expected table got nil[/i], silent [i]/say[/i] failures). Every crash reported in the comments section has been fixed.
-[*][b]Ollama, finally working properly.[/b] The old version silently ignored [i]max_tokens[/i] and [i]temperature[/i]. New version uses the OpenAI-compatible endpoint so all options work.
-[*][b]Multiplayer-safe:[/b] admin gate, per-player NPC cap, spawn/chat cooldowns, and API keys never leak into chat errors.
+[*][url=https://steamcommunity.com/sharedfiles/filedetails/?id=3126986993]Mantle[/url]
+[*][url=https://steamcommunity.com/sharedfiles/filedetails/?id=2924839375]Montserrat font[/url] (Mantle asks for it)
 [/list]
+Without them the addon drops back to an older, plainer menu. It still works, it just does not look like the screenshots.
 
-[h2]Supported providers[/h2]
-[list]
-[*][b]Groq[/b] — [i]free tier, no credit card, very fast, not region-blocked[/i]. Recommended for most people. [url=https://console.groq.com/keys]Get a key[/url]
-[*][b]OpenRouter[/b] — [i]huge variety of free [code]:free[/code] models, including reasoning and uncensored ones[/i]. The addon auto-fetches the current free model list daily so you always have fresh options. [url=https://openrouter.ai/keys]Get a key[/url]
-[*][b]OpenAI[/b] — GPT-5, GPT-4.1, GPT-4o, o4-mini. [i]Paid, blocked in several regions.[/i] [url=https://platform.openai.com/api-keys]Get a key[/url]
-[*][b]DeepSeek[/b] — DeepSeek Chat V3 and Reasoner R1. [i]Cheap paid API.[/i] [url=https://platform.deepseek.com/api_keys]Get a key[/url]
-[*][b]Ollama[/b] — [i]run entirely on your own computer, completely free and private[/i]. Great for RP because you pick the model and there's no rate limit. [url=https://ollama.com/download]Install Ollama[/url]
-[/list]
-
-[h2]How to use[/h2]
+[h2]First time setup — about a minute[/h2]
 [olist]
-[*]Subscribe to the addon.
-[*]Launch Garry's Mod in a sandbox game.
-[*]Press [b]C[/b] to open the context menu.
-[*]Click the [b]AI NPCs[/b] icon on the right side of the C menu.
-[*]On first launch, hit the [b]Get free Groq key[/b] button and sign up (takes 30 seconds). Paste your key into the API Key field.
-[*]Describe your character — e.g. [i]"A grumpy Russian bartender who hates everyone but has a soft spot for cats"[/i].
-[*]Pick an NPC class (citizen, combine, zombie, Alyx, whoever you want them to look like).
-[*]Click [b]Spawn NPC[/b].
-[*]Walk up to the NPC. A golden nametag appears above them.
-[*]Press [b]E[/b] to open a chat window, or just type in chat when you're nearby.
+[*]Press [b]C[/b] → [b]AI NPCs[/b].
+[*]The setup wizard opens. Pick [b]Groq[/b] — free tier, no credit card.
+[*]Press [b]Open key page[/b], sign in, create a key, paste it back.
+[*]Press [b]Test & save[/b]. It tells you immediately whether the key works.
+[*]Optional: add a [b]Fish Audio[/b] key for cloned character voices. Skip it and NPCs still speak with the free built-in voices.
 [/olist]
 
-[h2]I'm in Russia / Iran / a region blocked by OpenAI[/h2]
+[h2]Your first character[/h2]
+[olist]
+[*][b]Library[/b] → [b]+ New character[/b].
+[*]Give it a name and a personality. "A grumpy Russian bartender who secretly likes cats" works a lot better than nothing.
+[*]Pick a voice — anything with a sample can be played instantly, free.
+[*]Pick a body: any NPC model or playermodel, with a live preview.
+[*]Choose a starting weapon, or leave it unarmed.
+[*][b]Save & spawn[/b], then walk up and press [b]E[/b]. [i]/say[/i] works from anywhere.
+[/olist]
 
-Use [b]Groq[/b] or [b]OpenRouter[/b] instead. Neither blocks any country we know of. The old "not available in your region" error was an OpenAI thing — the new version defaults to Groq to avoid it entirely.
-
-[h2]Server admin options[/h2]
-
-Convars (all [code]FCVAR_ARCHIVE[/code], persist across restarts):
+[h2]Providers[/h2]
 [list]
-[*][code]ainpc_enabled[/code] — master kill switch
-[*][code]ainpc_admin_only[/code] — restrict spawning to admins
-[*][code]ainpc_max_per_player[/code] — concurrent NPCs per player (default 3)
-[*][code]ainpc_cooldown_seconds[/code] — spawn cooldown (default 5)
-[*][code]ainpc_chat_cooldown_seconds[/code] — chat cooldown (default 1.5)
-[*][code]ainpc_proximity_chat[/code] — nearby chat auto-routes to the closest NPC (default on)
-[*][code]ainpc_proximity_range[/code] — distance for proximity chat (default 250)
-[*][code]ainpc_interact_range[/code] — distance for E-to-talk (default 140)
-[*][code]ainpc_openrouter_autorefresh[/code] — auto-update OpenRouter free models daily (default on)
+[*][b]Groq[/b] — free tier, no card, very fast. [i]Start here.[/i]
+[*][b]OpenRouter[/b] — hundreds of models, many of them free.
+[*][b]OpenAI[/b] — paid, best quality.
+[*][b]DeepSeek[/b] — cheap.
+[*][b]Ollama[/b] — runs on your own PC, free and private.
+[/list]
+Each provider keeps its own key, so you can switch whenever you like without losing anything.
+
+[h2]Voices[/h2]
+[b]Free, no account:[/b] 13 languages of Google TTS plus retro Microsoft Sam, Mike and Mary.
+
+[b]Fish Audio character voices:[/b] the cloned ones. Search a name (Rick, Barney, GLaDOS…), press play on the free sample, pick the one that sounds right. Fish charges credit per character spoken. Everyone on the server hears the same voice, and only the server needs your key — other players do not need one of their own.
+
+[h2]Server owners[/h2]
+[list]
+[*][code]ainpc_enabled[/code], [code]ainpc_admin_only[/code], [code]ainpc_max_per_player[/code], [code]ainpc_cooldown_seconds[/code]
+[*][code]ainpc_proximity_chat[/code], [code]ainpc_proximity_range[/code], [code]ainpc_interact_range[/code]
+[*][code]ainpc_allow_actions[/code], [code]ainpc_allow_pvp[/code], [code]ainpc_tts_allowed[/code]
+[/list]
+Set [b]ainpc_allow_pvp 0[/b] if you do not want NPCs fighting players.
+
+[h2]If something is not working[/h2]
+[list]
+[*][b]No menu, or an old-looking menu[/b] — install Mantle and the Montserrat font.
+[*][b]"Key rejected"[/b] — copy the key again from the provider's page. The setup wizard tells you straight away.
+[*][b]The NPC does not reply[/b] — check your key in Settings, and check the model still exists; free model lists rotate.
+[*][b]A built-in voice is silent[/b] — try a different one, those hosts rate-limit sometimes.
+[*][b]E does nothing[/b] — you need to be within about 3 metres, and the NPC needs its yellow name tag. Ordinary NPCs are not AI ones.
 [/list]
 
-[h2]Got an error? Read this first[/h2]
+[hr][/hr]
+Your key is stored on your own PC, in [code]garrysmod/data/ai_npcs_settings.json[/code], and is never shown to other players.
 
-[list]
-[*][b]"No AI NPC spawned"[/b] — Press C → AI NPCs → Spawn one.
-[*][b]"API key required"[/b] — The old free-key button was a dead hardcoded key that doesn't work any more. You need to get your own free key. Click the big button in the panel, it's a 30-second signup.
-[*][b]"... can't respond right now: HTTP error 401"[/b] — Your API key is wrong. Paste it again.
-[*][b]"... can't respond right now: HTTP error 429"[/b] — You've hit the rate limit. Wait a few minutes, or switch providers.
-[*][b]Pressing E doesn't open the chat window[/b] — Make sure the NPC has the golden nametag above its head. If not, it's a regular NPC, not an AI one.
-[/list]
-
-[h2]Links[/h2>
-[list]
-[*][url=https://github.com/SonnyTaylor/AI-NPCs-GMod]GitHub repo[/url]
-[*]Report bugs in the Discussions tab, not the comments — we actually read the Discussions tab.
-[/list]
-
----
-
-## Repository rename suggestion
-
-The GitHub repo is currently named `AI-NPCs-GMod`. That's fine but a few tweaks would help:
-
-1. Rename to **`gmod-ai-npcs`** (lowercase, dash-prefixed by platform — matches the common `gmod-*` convention for GMod addons on GitHub). This also improves discoverability when someone searches "gmod ai".
-2. Update the Workshop addon title to **"AI NPCs"** (drop "ChatGPT" — it's misleading now that the addon supports five providers, and "ChatGPT" in the title keeps driving the false expectation that typing the word "API" is the setup instruction — see the YoshiGamerLover777 comment).
-3. Set the GitHub repo description to: *"Spawn AI-powered NPCs in Garry's Mod. Supports free providers (Groq, OpenRouter), OpenAI, DeepSeek, and self-hosted Ollama."*
-4. Add topics: `garrys-mod`, `gmod`, `gmod-addon`, `lua`, `ai`, `llm`, `chatbot`, `roleplay`.
-
-## Things to update on the Workshop page itself (outside the description)
-
-- **Title**: change from "ChatGPT NPCs" to **"AI NPCs"**.
-- **Tags**: add "Addon" (in addition to existing fun/roleplay).
-- **Screenshots**: the current ones show the old UI. Take new ones showing:
-  1. The config panel with the provider dropdown open
-  2. The golden nametag above an NPC
-  3. The press-E chat window mid-conversation
-  4. The onboarding modal ("Get free Groq key")
-- **Change notes** for this update: paste the "What v2.0 fixes" section from the description.
-- **Pin a comment** saying: *"v2.0 released — the free tier actually works now, and every crash from the old version is fixed. If you had a bad experience before, unsubscribe and resubscribe to grab the new version."*
+[url=https://github.com/SonnyTaylor/AI-NPCs-GMod]GitHub[/url] · Bugs and ideas go in the Discussions tab, not the comments.

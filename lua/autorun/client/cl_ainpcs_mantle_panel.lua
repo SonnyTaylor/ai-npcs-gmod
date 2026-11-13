@@ -97,7 +97,7 @@ function UI.StatusPill(parent, width)
 
     local dot = makeDot(box)
 
-    local title = label(box, "voice service: checking...", "Fated.16", nil, 22)
+    local title = label(box, "Fish Audio: checking…", "Fated.16", nil, 22)
     title:Dock(TOP)
 
     local sub = label(box, "", "Fated.14", UI.col("gray"), 20)
@@ -107,58 +107,29 @@ function UI.StatusPill(parent, width)
     box.title = title
     box.sub   = sub
 
-    --- info = the /health payload or nil; code = HTTP status, or a string when
-    --- the request never completed. Distinguishing the two matters: a 400 is
-    --- Windows' HTTP.sys rejecting the Host header (relay bound to "localhost",
-    --- asked for 127.0.0.1), which used to be reported as "not running" and sent
-    --- people restarting a service that was already up.
+    --- info = the credit payload, or nil when nothing answered.
     function box:SetState(info, code)
         if not IsValid(self) then return end
         self.title:SetColor(UI.col("text"))
 
         if not info then
+            self.dot._color = UI.sem.warn
+            self.title:SetText("Fish Audio: unreachable")
+            self.sub:SetText("could not reach api.fish.audio (" .. tostring(code) .. ") — built-in voices still work")
+        elseif info.key_rejected then
             self.dot._color = UI.sem.bad
-            if type(code) == "number" then
-                self.title:SetText("voice service: unreachable (HTTP " .. code .. ")")
-                self.sub:SetText(code == 400
-                    and "wrong host — use http://localhost:7171, not 127.0.0.1"
-                    or "the relay answered, but not with /health JSON")
-            else
-                self.title:SetText("voice service: NOT running")
-                self.sub:SetText("tried " .. tostring(AINPCS._relayTried or AINPCS.RelayBase()))
-            end
-        elseif info.local_blocked then
-            -- Expected on a default install: Garry's Mod refuses client HTTP to
-            -- loopback. Everything still works — the voice list and the key travel
-            -- as files, and audio goes through sound.PlayURL (BASS, not the Lua HTTP
-            -- shim), so this is a healthy state, not a warning.
-            self.dot._color = UI.sem.ok
-            self.title:SetText("voice service: ready (file mode)")
-            self.sub:SetText("Garry's Mod blocks HTTP to loopback; voices and the key use files")
-        elseif info.file_only then
-            -- The relay's heartbeat file says it is up, but the game's own HTTP
-            -- client could not reach it. That is a firewall/sandbox problem, not a
-            -- "start the relay" problem, and the message says so.
-            self.dot._color = UI.sem.warn
-            self.title:SetText("voice service: up, but unreachable from the game")
-            self.sub:SetText(string.format(
-                "status file is %ss old; HTTP said %s — voice search and playback will fail",
-                tostring(info.age), tostring(info.code)))
-        elseif info.unparsed then
-            -- 200 with a body we cannot parse: reachable, not broken.
-            self.dot._color = UI.sem.warn
-            self.title:SetText("voice service: running, unreadable status")
-            self.sub:SetText("see ainpc_voice_diag in the console")
+            self.title:SetText("Fish Audio: key rejected")
+            self.sub:SetText("paste a valid Fish Audio key below")
         elseif info.key_set then
             self.dot._color = UI.sem.ok
-            self.title:SetText("voice service: ready")
-            self.sub:SetText(string.format("credit %s   %s",
+            self.title:SetText("Fish Audio: ready")
+            self.sub:SetText(string.format("credit %s   ·   %d pinned voices",
                 type(info.credits) == "number" and string.format("%.2f", info.credits) or "?",
-                AINPCS.RelayBase()))
+                info.presets or 0))
         else
             self.dot._color = UI.sem.warn
-            self.title:SetText("voice service: running, no key")
-            self.sub:SetText("paste your Fish Audio key below")
+            self.title:SetText("Fish Audio: no key (built-in voices only)")
+            self.sub:SetText("paste your Fish Audio key below for cloned character voices")
         end
     end
 
@@ -211,8 +182,9 @@ end
 
 local function newDraft()
     return {
-        id = nil, name = "", description = "", voiceId = "",
-        class = "npc_citizen", reasoning = "none", speak = true,
+        id = nil, name = "", description = "", voiceId = "", voiceLabel = "",
+        class = "npc_citizen", bodyModel = "", weapon = "none",
+        reasoning = "none", speak = true,
     }
 end
 
@@ -702,72 +674,84 @@ local function buildCreatePage(page)
     end
 
     local function buildVoice(draft)
-        local searchRow = vgui.Create("EditablePanel", host)
-        searchRow:Dock(TOP)
-        searchRow:SetTall(40)
+        -- Voice selection lives in the shared browser (one searchable list of the
+        -- whole Fish Audio library plus the free built-in voices). This step just
+        -- shows what is chosen and opens it.
+        local card = vgui.Create("MantlePanel", host)
+        card:SetColorAlpha(2)
+        card:SetRadius(12)
+        card:Dock(TOP)
+        card:SetTall(96)
+        card:DockMargin(0, 0, 0, 10)
+        card:DockPadding(14, 10, 14, 10)
 
-        local search = textEntry(searchRow, UI.w(CONTENT_W) - 116, "rick sanchez")
-        search:Dock(LEFT)
+        local voiceTitle = label(card, "", "Fated.18b", nil, 26)
+        voiceTitle:Dock(TOP)
 
-        local searchBtn = vgui.Create("MantleBtn", searchRow)
-        searchBtn:SetTxt("Search")
-        searchBtn:SetPos(UI.w(CONTENT_W) - 108, 2)
-        searchBtn:SetSize(108, 34)
+        local voiceSub = label(card, "", "Fated.14", UI.col("gray"), 22)
+        voiceSub:Dock(TOP)
 
-        local status = label(host, "", "Fated.14", UI.col("gray"), 22)
-        status:Dock(TOP)
+        local btnRow = vgui.Create("EditablePanel", host)
+        btnRow:Dock(TOP)
+        btnRow:SetTall(40)
 
-        local previewRow = vgui.Create("EditablePanel", host)
-        previewRow:Dock(BOTTOM)
-        previewRow:SetTall(40)
+        local browseBtn = vgui.Create("MantleBtn", btnRow)
+        browseBtn:SetTxt("Browse voices…")
+        browseBtn:SetWide(UI.w(210))
+        browseBtn:DockMargin(0, 2, 8, 2)
+        browseBtn:Dock(LEFT)
 
-        local previewBtn = vgui.Create("MantleBtn", previewRow)
-        previewBtn:SetTxt("Preview selected voice")
-        previewBtn:SetWide(UI.w(230))
-        previewBtn:DockMargin(0, 2, 0, 2)
-        previewBtn:Dock(LEFT)
+        local testBtn = vgui.Create("MantleBtn", btnRow)
+        testBtn:SetTxt("Hear this voice")
+        testBtn:SetWide(UI.w(180))
+        testBtn:DockMargin(0, 2, 0, 2)
+        testBtn:Dock(LEFT)
 
-        local tbl = vgui.Create("MantleTable", host)
-        tbl:Dock(FILL)
-        tbl:DockMargin(0, 6, 0, 6)
-        tbl:SetContextMenuEnabled(false)
-        tbl:AddColumn("Voice", UI.w(CONTENT_W), "left", true)
-
-        local function fill(voices)
-            tbl:Clear()
-            for _, v in ipairs(voices or {}) do
-                local index = tbl:AddItem(v.label or v.name or "?")
-                local row = tbl:GetRow(index)
-                if row then row.voiceId = "relay:" .. tostring(v.name) end
+        local function refresh()
+            if AINPCS.IsBlank(draft.voiceId or "") then
+                draft.voiceId = AINPCS.Settings.fallbackVoice or "google:en"
             end
+            local v = Voices.Get and Voices.Get(draft.voiceId)
+            voiceTitle:SetText(v and v.label or draft.voiceId)
 
-            local count = #(voices or {})
-            status:SetText(count == 0
-                and "no matches — is the voice service running?"
-                or (count .. " matches, click one"))
+            local isFish = Voices.IsFish and Voices.IsFish(draft.voiceId)
+            if isFish then
+                local hasKey = AINPCS.Trim(AINPCS.Settings.fishKey or "") ~= ""
+                voiceSub:SetColor(hasKey and UI.col("gray") or UI.sem.warn)
+                voiceSub:SetText(hasKey
+                    and "Fish Audio voice — uses your key's credit when it speaks"
+                    or "Fish Audio voice — add your Fish Audio key in Settings to use it")
+            else
+                voiceSub:SetColor(UI.col("gray"))
+                voiceSub:SetText("Built-in voice — free and keyless")
+            end
         end
 
-        tbl:SetAction(function(row)
-            if not row.voiceId then return end
-            draft.voiceId = row.voiceId
-            status:SetText("selected: " .. voiceLabel(draft.voiceId))
-        end)
-
-        local function doSearch()
-            status:SetText("searching...")
-            AINPCS.RelayVoices(AINPCS.Trim(search:GetValue() or ""), fill)
+        browseBtn.DoClick = function()
+            UI.click()
+            AINPCS.OpenVoiceBrowser({
+                voiceId = draft.voiceId,
+                onPick = function(voiceId, voiceName)
+                    draft.voiceId = voiceId
+                    draft.voiceLabel = voiceName or ""
+                    refresh()
+                end,
+            })
         end
 
-        searchBtn.DoClick = function() UI.click() doSearch() end
-        search.textEntry.OnEnter = doSearch
-        previewBtn.DoClick = function()
-            if not draft.voiceId or draft.voiceId == "" then return end
+        testBtn.DoClick = function()
             UI.click()
             local who = AINPCS.Trim(draft.name or "") ~= "" and draft.name or "an NPC"
             AINPCS.PreviewVoice(draft.voiceId, "Hello, I am " .. who .. ".")
         end
 
-        doSearch()
+        local tip = label(host,
+            "Search any character in the browser (barney, rick, a granny…). Rows tagged “free sample” play instantly without spending credit; duplicates of the same character are collapsed into one.",
+            "Fated.14", UI.col("gray"), 46)
+        tip:Dock(TOP)
+        tip:SetWrap(true)
+
+        refresh()
     end
 
     local function buildBody(draft)
@@ -783,11 +767,10 @@ local function buildCreatePage(page)
 
         local preview = vgui.Create("DModelPanel", previewBox)
         preview:Dock(FILL)
-        preview:SetModel(classModel(draft.class))
-        preview:SetFOV(46)
+        preview:SetFOV(42)
         preview.LayoutEntity = function(self, ent)
             self:RunAnimation()
-            ent:SetAngles(Angle(0, RealTime() * 60, 0))
+            ent:SetAngles(Angle(0, RealTime() * 45, 0))
         end
 
         local right = vgui.Create("EditablePanel", row)
@@ -798,48 +781,55 @@ local function buildCreatePage(page)
         btnRow:SetTall(40)
 
         local browse = vgui.Create("MantleBtn", btnRow)
-        browse:SetTxt("Browse bodies")
-        browse:SetWide(UI.w(200))
-        browse:DockMargin(0, 2, 0, 2)
+        browse:SetTxt("Choose a body…")
+        browse:SetWide(UI.w(210))
+        browse:DockMargin(0, 2, 8, 2)
         browse:Dock(LEFT)
 
-        local bodyStatus = label(right, "current: " .. classLabel(draft.class),
-            "Fated.14", UI.col("gray"), 22)
+        local resetBtn = vgui.Create("MantleBtn", btnRow)
+        resetBtn:SetTxt("Class default")
+        resetBtn:SetWide(UI.w(170))
+        resetBtn:DockMargin(0, 2, 0, 2)
+        resetBtn:Dock(LEFT)
+
+        local bodyStatus = label(right, "", "Fated.16", nil, 24)
         bodyStatus:Dock(TOP)
 
-        local tbl = vgui.Create("MantleTable", right)
-        tbl:Dock(FILL)
-        tbl:DockMargin(0, 6, 0, 0)
-        tbl:SetContextMenuEnabled(false)
-        tbl:AddColumn("Body", UI.w(320), "left", true)
-        tbl:AddColumn("Class", UI.w(200), "left", true)
+        local bodySub = label(right, "", "Fated.14", UI.col("gray"), 22)
+        bodySub:Dock(TOP)
 
-        local function setClass(id)
-            draft.class = id
-            preview:SetModel(classModel(id))
-            bodyStatus:SetText("current: " .. classLabel(id))
+        local function refresh()
+            local reg = list.Get("NPC") or {}
+            local data = reg[draft.class]
+            local model = draft.bodyModel
+            if not AINPCS.IsUsableBodyModel(model) then
+                model = (data and data.Model) or DEFAULT_MODEL
+            end
+            preview:SetModel(model)
+            bodyStatus:SetText((data and data.Name) or draft.class or "?")
+            bodySub:SetText(string.lower(model))
         end
 
-        for _, id in ipairs(classIds) do
-            local index = tbl:AddItem(classLabel(id), id)
-            local rowData = tbl:GetRow(index)
-            if rowData then rowData.classId = id end
-        end
-
-        tbl:SetAction(function(rowData)
-            if rowData.classId then setClass(rowData.classId) end
-        end)
-
-        -- The modal selector is the pretty path: interactive preview, drag to
-        -- rotate, wheel to dolly. It returns only a model, so classes sharing a
-        -- model resolve through modelToClass and the table above covers the rest.
         browse.DoClick = function()
             UI.click()
-            Mantle.ui.model_selector(catalogue, function(model)
-                local id = modelToClass[model]
-                if id then setClass(id) end
-            end)
+            AINPCS.OpenBodyBrowser({
+                class     = draft.class,
+                bodyModel = draft.bodyModel,
+                onPick = function(class, model)
+                    draft.class = class
+                    draft.bodyModel = model
+                    refresh()
+                end,
+            })
         end
+
+        resetBtn.DoClick = function()
+            UI.click()
+            draft.bodyModel = ""
+            refresh()
+        end
+
+        refresh()
     end
 
     local function buildBehaviour(draft)
@@ -884,6 +874,35 @@ local function buildCreatePage(page)
         speak:SetTxt("Speak out loud")
         speak:SetValue(draft.speak ~= false)
         speak.OnChange = function(_, value) draft.speak = value end
+
+        local wepNote = label(host, "Starting weapon (the NPC can switch, drop it, or be told to attack in conversation)",
+            "Fated.14", UI.col("gray"), 32)
+        wepNote:Dock(TOP)
+        wepNote:SetWrap(true)
+        wepNote:DockMargin(0, 16, 0, 4)
+
+        local wepRow = vgui.Create("EditablePanel", host)
+        wepRow:Dock(TOP)
+        wepRow:SetTall(38)
+
+        local wepCombo = vgui.Create("MantleComboBox", wepRow)
+        wepCombo:Dock(LEFT)
+        wepCombo:SetWide(UI.w(CONTENT_W))
+        wepCombo:DockMargin(0, 2, 0, 2)
+        wepCombo:SetPlaceholder("weapon")
+
+        local wepLabels = {}
+        for _, wid in ipairs(AINPCS.WeaponOrder or {}) do
+            local wInfo = AINPCS.Weapons[wid]
+            if wInfo then
+                wepLabels[wid] = wInfo.label
+                wepCombo:AddChoice(wInfo.label, wid)
+            end
+        end
+        if wepLabels[draft.weapon or "none"] then
+            wepCombo:SetValue(wepLabels[draft.weapon or "none"])
+        end
+        wepCombo.OnSelect = function(index, text, value) draft.weapon = value end
     end
 
     local function saveAndMaybeSpawn(spawnNow)
@@ -1088,6 +1107,17 @@ local function buildSettingsPage(page)
 
     section("AI provider", "Used for every NPC. You set this once.")
 
+    local setupRow = row(36)
+    local setupBtn = btn(setupRow, "Run setup again (guided)", 240, false)
+    setupBtn.DoClick = function()
+        UI.click()
+        if isfunction(AINPCS.OpenSetupWizard) then
+            AINPCS.OpenSetupWizard({ rerun = true })
+        end
+    end
+
+    note("The guided setup opens the provider's key page for you and verifies the key before saving it.", 30)
+
     local provRow   = row(38)
     local provCombo = combo(provRow)
     local provLabel = {}   -- provider id -> the exact label we added
@@ -1234,8 +1264,8 @@ local function buildSettingsPage(page)
     -- Voice service
     -- =========================================================================
 
-    section("Voice service (Fish Audio)",
-        "Character voices need a local helper with your own Fish key. Start it with relay/start.bat.")
+    section("Fish Audio voice service",
+        "Built into the addon — no helper or .bat file to run. Paste your own Fish Audio key for cloned character voices and full library search.")
 
     local pill = UI.StatusPill(canvas, cw)
     pill:Dock(TOP)
@@ -1250,6 +1280,7 @@ local function buildSettingsPage(page)
 
     local fishRow   = row(38)
     local fishEntry = entry(fishRow, cw - 106, "Fish Audio API key (sk-fish-...)")
+    fishEntry:SetValue(AINPCS.Settings.fishKey or "")
 
     local fishSave = vgui.Create("MantleBtn", fishRow)
     fishSave:SetTxt("Save")
@@ -1268,11 +1299,21 @@ local function buildSettingsPage(page)
     end
 
     local libRow = row(36)
-    local libBtn = btn(libRow, "Open voice library", 200, false)
+    local libBtn = btn(libRow, "Browse all Fish Audio voices…", 240, false)
     libBtn.DoClick = function()
         UI.click()
-        gui.OpenURL(AINPCS.RelayBase() .. "/")
+        AINPCS.OpenVoiceBrowser({
+            voiceId = S.fallbackVoice,
+            onPick = function(voiceId)
+                S.fallbackVoice = voiceId
+                persist()
+            end,
+        })
     end
+
+    local pinRow = row(30)
+    local pinNote = note("Star any voice in the browser to pin it — pinned voices appear first so you can find them again.", 30)
+    pinNote:Dock(TOP)
 
     -- =========================================================================
     -- Fallback voice
@@ -1286,7 +1327,8 @@ local function buildSettingsPage(page)
     local fbLabel = {}
 
     for _, v in ipairs(Voices.list or {}) do
-        if not string.match(v.id, "^relay:") then
+        -- Fallback must stay free/keyless: Fish Audio voices need credit.
+        if not Voices.IsFish(v.id) then
             fbLabel[v.id] = v.label
             fbCombo:AddChoice(v.label, v.id)
         end

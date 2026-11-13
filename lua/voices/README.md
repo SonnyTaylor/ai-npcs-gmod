@@ -1,109 +1,93 @@
-# Voice relay (character + cloned voices)
+# Voices
 
-GMod can only play audio from a **URL**, and it must never hold an API key. So
-anything that needs a key or a model lives in one small local service that **each
-player runs themselves**, with **their own** Fish Audio key:
+Two kinds of voice, both driven from inside the game. There is **no helper
+program, no `.bat` file, and nothing to install**.
+
+| Kind | Example id | Cost | Where the audio comes from |
+|---|---|---|---|
+| Built-in, keyless | `google:en`, `sapi4:Sam` | free | a public TTS URL streamed by each client (`sound.PlayURL`) |
+| Fish Audio character | `fish:<32-hex model id>` | your Fish Audio credit | synthesised and streamed by the server (`sound.PlayFile`) |
+
+The `relay:<id>` spelling from v2.x still resolves — it is normalised to
+`fish:<id>` on load, so saved characters keep working.
+
+---
+
+## Built-in voices
+
+These need nothing: no account, no key, no network round trip on our side.
 
 ```
-ainpc_voice_relay_url "http://localhost:7171"
+google:en  google:de  google:ru  google:fr  google:es  google:it  google:pt
+google:pl  google:nl  google:sv  google:da  google:tr  google:ja
+sapi4:Sam  sapi4:Mike  sapi4:Mary
 ```
 
-Two implementations ship in `relay/`, same API:
+Google caps a single request at roughly 200 characters, so long lines are split
+into ~180-character chunks by `Voices.Split` and queued back to back.
 
-* **`relay/start.bat`** -> `relay.ps1`, Windows PowerShell. Double-click and done,
-  no installs. This is the one users should run.
-* `relay/server.py` — Python 3 standard library, for Linux/macOS or if you prefer it.
+---
 
-Once that convar is set, the config panel grows a `relay:<name>` voice for every
-voice the relay advertises, and the audio still comes out of the NPC's mouth like
-any built-in voice.
+## Fish Audio voices (cloned / character voices)
 
-## Contract
+You need your own Fish Audio key (`sk-fish-…`). Paste it once in **AI NPCs →
+Settings → Fish Audio**. It is stored in `garrysmod/data/ai_npcs_settings.json`,
+never written anywhere else, and it is the *server* or *client* that calls Fish
+depending on what is being rendered:
 
-The addon talks to three endpoints. Keep responses small and fast; it is on the
-hot path of a chat reply.
-
-| Method | Path | Response |
+| What | Who calls Fish | Why |
 |---|---|---|
-| `GET` | `/` | Setup page: paste key, pin voices, browse library |
-| `GET` | `/health` | `{"ok": true, "key_set": true, "presets": 10, ...}` |
-| `GET` | `/voices` | `{"voices": [{"name": "<id>", "label": "Rick Sanchez"}]}` — pinned first |
-| `GET` | `/voices?q=peter%20griffin` | server-side title search across the whole library |
-| `GET` | `/voices?id=<model id>` | one model by id (for pasted ids) |
-| `GET` | `/tts?voice=<id>&text=<text>` | raw `audio/wav`, one chunk, disk cached |
-| `POST` | `/config` | `{"key": "sk-fish-..."}` — validated against the API |
-| `POST` | `/presets` | `{"id": "<model id>"}` or `{"id": ..., "remove": true}` |
+| voice search / library browsing | each client | the list is public and unauthenticated |
+| credit balance + key validation | each client | instant feedback in the panel |
+| a line an NPC speaks | the server, once | every nearby player then hears the same voice, and no player needs a key |
+
+### How a spoken line reaches players
+
+```
+server: POST https://api.fish.audio/v1/tts  (Bearer <host's key>)
+        -> mp3 bytes
+        -> chunked net message  AINPC_TTSAudio   (28 KB pieces)
+client: file.Write("ainpc_tts/stream_<id>.mp3")
+        -> sound.PlayFile("data/ainpc_tts/...", "3d mono")
+        -> positioned at the NPC's head, jaw driven by the channel's level
+```
+
+Rendered lines are cached in memory by `voice|text`, so a repeated bark costs
+nothing the second time.
+
+### Browsing voices
+
+**AI NPCs → Create → Voice → Browse voices…** opens one searchable list of the
+whole Fish Audio library:
+
+* sorted by **most used** by default (`sort_by=task_count`), not by a hardcoded
+  pin list;
+* **duplicates collapsed** — `Rick Sanchez`, `Rick Sanchez (Text To Speech)` and
+  `rick sanchez tts` are one row, keeping the most-used upload;
+* every row with a pre-rendered sample has a **▶ Play** button that streams
+  Fish's own sample — free, no credit spent;
+* rows without a sample get **▶ Test**, which synthesises a short line (costs a
+  little credit);
+* ★ pins a voice for quick access; pinned voices appear first on the first page;
+* language filter, and Prev/Next paging (50 per page).
+
+Pasting a raw 32-hex Fish model id into the search box resolves it directly.
+
+---
+
+## Adding more engines
+
+To add a new keyless URL engine, append to `V.list` in `voices/voices.lua` and
+add a branch to `V.BuildURL`. To add a keyed engine, synthesise in
+`playTTS()` (server, `sv_gmodainpc.lua`) and stream it with
+`sendStreamedAudio(entity, bytes, "mp3"|"wav")`, which is what the Fish Audio
+path already does.
 
 Rules that matter:
 
-- **Return `audio/wav`.** GMod's `sound.PlayURL` is picky; wav is the safest
-  container, mp3 is usually fine, ogg is not.
-- **Answer in well under 2s** for a ~15 word line. Stream the file, don't wait for
-  a batch job. The addon already chunks long lines to ~180 characters, and it
-  treats three consecutive failures as "host is down" and stops trying.
-- **No auth on the LAN.** Bind to `127.0.0.1` or the LAN interface. If you expose
-  it to the internet, put a token in front of it and send it as a query param —
-  the addon only does GETs with no headers.
-- `voice` may be anything you like (`barney`, `kleiner`, `breen`). The addon does
-  no validation beyond `^%w+$` before the colon.
-
-## Fish Audio specifics (what the shipped relay does)
-
-- **Listing and search cost nothing.** `GET /model?title=<q>` is a real server-side
-  search across the whole library — the plain listing only exposes a 1000-model
-  window, which is why filtering that window locally missed half the characters.
-  Only `/v1/tts` spends credits, and every rendered chunk is cached on disk by
-  `sha256(voice + text)`, so repeat lines are free.
-- **The key never touches the addon.** `FISH_API_KEY` from the environment is not
-  written to `config.json`; a key pasted into the setup page is, with `0600` where
-  the OS supports it. `config.json` and `cache/` are gitignored.
-- **Voices are just model ids.** Any 32-hex id from fish.audio works — pin it in the
-  setup page, or paste it into the in-game "Search voices" box.
-
-## Cloned voice library — the interesting part
-
-The reason to clone is that GMod already ships the voices you want to hear. The
-game's VPKs contain thousands of short, clean character lines:
-
-```
-garrysmod/garrysmod_dir.vpk  →  sound/vo/npc/barney/*.wav
-                                sound/vo/npc/male01/*.wav
-                                sound/vo/npc/vortigaunt/*.wav
-                                sound/vo/Citizen/*.wav
-```
-
-Plan for the library:
-
-1. **Extract** reference samples per character (10–30s of clean speech, no
-   music/SFX, no overlapping lines) into `samples/<character>/`.
-2. **Pick an engine** (this is the one real decision):
-   - **XTTS-v2** — best zero-shot cloning that runs locally, ~6s of reference audio
-     is enough, GPU strongly preferred, Apache-ish licence for the weights.
-   - **Piper** — fastest by far (CPU, realtime), but each voice needs a training
-     step, so it suits a fixed cast rather than arbitrary cloning.
-   - **ElevenLabs** — best quality, instant cloning, costs money and requires
-     uploading samples to a third party.
-   - **OpenAI TTS** — excellent quality, **no cloning**, but worth having as the
-     "high quality, no setup" fallback.
-3. **Store** `voices/<character>.json` = `{ engine, model, reference: [...], label }`.
-   `/tts` looks up the character, renders, and caches by
-   `hash(voice, text)` on disk — repeated barks ("Get out of here!") then cost
-   nothing.
-4. **Normalise** output: 22050 Hz mono wav, light gain normalisation, trim silence
-   at both ends. That makes every character sit at the same perceived volume.
-
-Do not ship cloned Valve character voices in the Workshop upload. Point at the
-local service, let each user build their own library from their own game files.
-
-## What the addon already does
-
-- `relay:<id>` voice ids registered from the relay, with in-panel search (title or
-  pasted model id) and pinned voices listed first.
-- `ainpc_voice_relay_url` client convar, so each player uses their own relay/key —
-  the server only supplies a default.
-- `ainpc_voice_relay` convar, replicated to clients via a global string so the
-  "Test voice" button hits the same host.
-- Per-NPC voice selection at spawn time, broadcast to every client so all players
-  hear the same thing.
-- Chunked playback with 3D positioning, fade distance, and follow-the-NPC
-  re-positioning every frame.
+- **Return wav or mp3.** `sound.PlayFile` is picky; ogg is not reliable in 3D.
+- **Answer fast.** Long lines are already chunked; a chunk that takes seconds to
+  arrive is a chunk the player hears late.
+- **Never put a key in a client-visible URL.** Anything a client streams should
+  be a public endpoint, which is why built-in voices use keyless services and
+  Fish Audio goes through the server.

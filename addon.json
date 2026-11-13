@@ -1,7 +1,21 @@
 {
   "title": "AI NPCs",
-  "description": "Spawn NPCs that talk back — out loud, from their own mouth. Pick a voice per NPC (13 languages), press E to chat, or just talk in chat when you're nearby. Supports Groq, OpenRouter, OpenAI, DeepSeek and Ollama (self-hosted), and can use cloned voices through a local voice relay.",
+  "description": "Spawn NPCs that talk back \u2014 out loud, from their own mouth. They know what is happening around them, remember you, and can follow, fight, flee and use whatever you give them. Pick a voice per NPC from all of Fish Audio or the free built-in voices, press E to chat, or just talk in chat when you're nearby. Supports Groq, OpenRouter, OpenAI, DeepSeek and Ollama, with a guided first-run setup.",
   "type": "npc",
-  "tags": ["fun", "roleplay"],
-  "ignore": [".git/*", "README.md", "WORKSHOP_DESCRIPTION.md", "ROADMAP.md", "CHANGELOG.md", "MANTLE_PLAN.md", "LICENSE", ".gitignore", "relay/*", "lua/voices/README.md"]
+  "tags": [
+    "fun",
+    "roleplay"
+  ],
+  "ignore": [
+    ".git/*",
+    "README.md",
+    "WORKSHOP_DESCRIPTION.md",
+    "ROADMAP.md",
+    "CHANGELOG.md",
+    "MANTLE_PLAN.md",
+    "LICENSE",
+    ".gitignore",
+    "lua/voices/README.md",
+    "WORKSHOP_DESCRIPTION.txt"
+  ]
 }

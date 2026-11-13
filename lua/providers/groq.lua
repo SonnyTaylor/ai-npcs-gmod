@@ -4,6 +4,7 @@ provider.id       = "groq"
 provider.label    = "Groq (free tier available)"
 provider.getKeyUrl = "https://console.groq.com/keys"
 provider.note     = "Free tier with daily rate limits. No credit card required. Fast inference."
+provider.defaultModel = "llama-3.3-70b-versatile"
 
 provider.modelOrder = {
     "llama-3.3-70b-versatile",
@@ -51,15 +52,16 @@ provider.models["groq/compound"].label           = "Compound (with web search)"
 
 if SERVER then
     function provider.request(npc, callback)
+        local q = npc._quirks or {}
+        local tokField = q.tokens_field or "max_tokens"
         local body = {
             model = npc.model,
-            messages = npc.history,
-            max_tokens = npc.max_tokens,
+            messages = npc.messages or npc.history,
+            [tokField] = npc.max_tokens,
         }
-        if npc.temperature ~= nil then body.temperature = npc.temperature end
-        if npc.reasoning and npc.reasoning ~= "" then
-            -- Groq has no "off"; low + hidden thinking is the fast path.
-            body.reasoning_effort = (npc.reasoning == "none") and "low" or npc.reasoning
+        if npc.temperature ~= nil and not q.no_temp then body.temperature = npc.temperature end
+        if npc.reasoning and npc.reasoning ~= "" and npc.reasoning ~= "none" and not q.no_reasoning then
+            body.reasoning_effort = npc.reasoning
             body.reasoning_format = "hidden"
         end
 

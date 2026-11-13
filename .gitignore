@@ -1,8 +1,5 @@
-# relay: local secrets + generated audio
-relay/config.json
-relay/cache/
-relay/__pycache__/
-*.pyc
+# generated audio caches (voices are rendered at runtime)
+data/
 
 # editor/OS noise
 .DS_Store

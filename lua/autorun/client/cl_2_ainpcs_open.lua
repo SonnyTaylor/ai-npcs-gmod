@@ -13,7 +13,37 @@ AINPCS = AINPCS or {}
 
 local UI = AINPCS.UI or {}
 
+--- Has the player got a usable AI provider yet?
+--- Ollama needs no key; every other provider does.
+function AINPCS.HasUsableAIKey()
+    local S = AINPCS.Settings
+    if not istable(S) then return false end
+    if (S.provider or "") == "ollama" then return true end
+    local keys = istable(S.apiKeys) and S.apiKeys or {}
+    return AINPCS.Trim(keys[S.provider or ""] or "") ~= ""
+end
+
+--- Should the panel hand over to the guided setup instead of opening?
+function AINPCS.NeedsSetup()
+    local S = AINPCS.Settings
+    if not istable(S) then return false end
+    if not S.firstRun then return false end
+    return not AINPCS.HasUsableAIKey()
+end
+
 function AINPCS.Open()
+    -- First install (or first install since this version): walk them through
+    -- getting a key instead of dropping them on a settings page with a blank
+    -- field and no idea where the key comes from.
+    --
+    -- If the wizard returns nil it is the placeholder from cl_0 (a stale or
+    -- half-mounted install), so fall through to the panel rather than leaving the
+    -- player with nothing at all.
+    if AINPCS.NeedsSetup() and isfunction(AINPCS.OpenSetupWizard) then
+        local opened = AINPCS.OpenSetupWizard()
+        if opened ~= nil then return opened end
+    end
+
     if UI.useMantle and UI.useMantle() and isfunction(AINPCS.OpenMantle) then
         return AINPCS.OpenMantle()
     end

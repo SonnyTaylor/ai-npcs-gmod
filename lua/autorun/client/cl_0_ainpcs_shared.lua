@@ -1,8 +1,9 @@
 --[[
     AI NPCs — client shared state
 
-    Settings, saved-NPC library, voice-service helpers and the model cache. No UI
-    here: the panel (cl_ainpcs_panel.lua) reads and writes this.
+    Settings, saved-NPC library, 100% in-game Fish Audio client (search, key validation,
+    credit check, and direct TTS synthesis + disk cache), hidden DHTML localhost relay
+    for Ollama, model cache, and spawn/update helpers.
 ]]
 
 AINPCS = AINPCS or {}
@@ -15,9 +16,11 @@ AINPCS.Voices    = AINPCS.Voices or Voices
 
 local SETTINGS_FILE = "ai_npcs_settings.json"
 local LIBRARY_FILE  = "ai_npcs_library.json"
+local FISH_API      = "https://api.fish.audio"
+local FISH_MODEL    = "s2.1-pro-free"
 
 -- =============================================================================
--- Fonts
+-- Fonts & Palette
 -- =============================================================================
 
 surface.CreateFont("AINPC_Header", { font = "Roboto", size = 22, weight = 700 })
@@ -38,6 +41,21 @@ AINPCS.Colors = {
     warn     = Color(235, 190, 90),
 }
 
+-- Guided setup lives in cl_ainpcs_setup.lua. This stub only exists so a client
+-- running a mixed or stale install (local folder + an older Workshop copy, or a
+-- mid-session addon remount) gets a readable message instead of a hard Lua error
+-- the moment someone presses a Settings button.
+-- The real file overwrites it whenever it loads: the guard means whichever order
+-- they arrive in, the real implementation wins.
+if not isfunction(AINPCS.OpenSetupWizard) then
+    function AINPCS.OpenSetupWizard()
+        if AINPCS.PushToast then
+            AINPCS.PushToast("Setup wizard unavailable — restart Garry's Mod so the addon's new files load, or paste your key directly in Settings.", "error")
+        end
+        return nil
+    end
+end
+
 -- =============================================================================
 -- Settings
 -- =============================================================================
@@ -45,6 +63,8 @@ AINPCS.Colors = {
 local DEFAULTS = {
     provider      = "groq",
     apiKeys       = {},
+    fishKey       = "",
+    pinnedVoices  = {},
     hostname      = "",
     model         = "",
     reasoning     = "none",
@@ -73,10 +93,26 @@ function AINPCS.LoadSettings()
     local disk = readJson(SETTINGS_FILE)
     if istable(disk) then
         for k, v in pairs(disk) do
-            if s[k] ~= nil or k == "apiKeys" then s[k] = v end
+            if s[k] ~= nil or k == "apiKeys" or k == "pinnedVoices" then
+                s[k] = v
+            end
         end
     end
     if not istable(s.apiKeys) then s.apiKeys = {} end
+    if not istable(s.pinnedVoices) or #s.pinnedVoices == 0 then
+        s.pinnedVoices = table.Copy(Voices.StarterFish or {})
+    end
+    for _, pv in ipairs(s.pinnedVoices) do
+        if istable(pv) and isstring(pv.name) and isstring(pv.label) then
+            Voices.Register("fish:" .. pv.name, pv.label)
+        end
+    end
+    -- Clean up legacy relay status files if present
+    for _, legacyFile in ipairs({ "ainpc_relay_status.json", "ainpc_relay_voices.json", "ainpc_relay_command.json" }) do
+        if file.Exists(legacyFile, "DATA") then
+            pcall(file.Delete, legacyFile)
+        end
+    end
     return s
 end
 
@@ -87,8 +123,85 @@ end
 AINPCS.Settings = AINPCS.LoadSettings()
 
 -- =============================================================================
--- NPC library (saved characters)
---   { id, name, description, voiceId, class, reasoning, speak }
+-- AI provider key validation (client-side convenience check)
+--
+-- A key is only "valid" if the provider itself says so, and a models listing is
+-- the cheapest authenticated endpoint every supported provider has. OpenRouter's
+-- model list is public, so it uses /key instead, which is auth-only.
+-- =============================================================================
+
+local KEY_ENDPOINTS = {
+    groq       = { url = "https://api.groq.com/openai/v1/models" },
+    openrouter = { url = "https://openrouter.ai/api/v1/key" },
+    openai     = { url = "https://api.openai.com/v1/models" },
+    deepseek   = { url = "https://api.deepseek.com/models" },
+}
+
+--- Where the player goes to create a key, and what to call it.
+function AINPCS.ProviderSignup(providerId)
+    local p = providers.get(providerId)
+    if not p then return nil end
+    return {
+        id      = p.id,
+        label   = p.label,
+        note    = p.note or "",
+        keyUrl  = p.getKeyUrl or "",
+        local_  = (p.id == "ollama"),
+        free    = (p.id == "groq" or p.id == "openrouter" or p.id == "ollama"),
+    }
+end
+
+--- Test an API key against the provider. callback(ok, message)
+--- Ollama is local and needs no key, so it reports "skipped" rather than failing.
+function AINPCS.TestProviderKey(providerId, key, callback)
+    callback = callback or function() end
+    key = AINPCS.Trim(key or "")
+
+    local endpoint = KEY_ENDPOINTS[providerId]
+    if not endpoint then
+        if providerId == "ollama" then
+            callback(true, "Local model server — no key needed. It is tested when an NPC first speaks.")
+        else
+            callback(true, "No key test available for this provider; saved anyway.")
+        end
+        return
+    end
+
+    if key == "" then
+        callback(false, "Paste a key first.")
+        return
+    end
+
+    HTTP({
+        url = endpoint.url,
+        method = "get",
+        headers = {
+            ["Authorization"] = "Bearer " .. key,
+            ["Accept"]        = "application/json",
+        },
+        success = function(code, body)
+            if code == 200 then
+                callback(true, "Key accepted.")
+            elseif code == 401 or code == 403 then
+                callback(false, "That key was rejected (HTTP " .. tostring(code) .. "). Copy it again from the provider's page.")
+            elseif code == 429 then
+                callback(true, "Key is valid but you are rate limited right now (HTTP 429).")
+            else
+                local parsed = AINPCS.SafeJSON(body)
+                local detail = (istable(parsed) and (parsed.message or parsed.error)) or ("HTTP " .. tostring(code))
+                if istable(detail) then detail = "provider rejected the request" end
+                callback(false, tostring(detail))
+            end
+        end,
+        failed = function(err)
+            callback(false, "Could not reach the provider: " .. tostring(err))
+        end,
+    })
+end
+
+-- =============================================================================
+-- NPC Library (saved characters)
+--   { id, name, description, voiceId, class, weapon, reasoning, speak }
 -- =============================================================================
 
 function AINPCS.LoadLibrary()
@@ -97,12 +210,16 @@ function AINPCS.LoadLibrary()
     if istable(disk) then
         for _, entry in ipairs(disk) do
             if istable(entry) and isstring(entry.name) and entry.name ~= "" then
+                local vId = Voices.NormaliseId(entry.voiceId or "")
                 table.insert(out, {
                     id          = entry.id or tostring(os.time()) .. math.random(100, 999),
                     name        = entry.name,
                     description = entry.description or "",
-                    voiceId     = entry.voiceId or "",
+                    voiceId     = vId,
+                    voiceLabel  = entry.voiceLabel or "",
                     class       = entry.class or "npc_citizen",
+                    bodyModel   = entry.bodyModel or "",
+                    weapon      = entry.weapon or "none",
                     reasoning   = entry.reasoning or "none",
                     speak       = entry.speak ~= false,
                 })
@@ -124,6 +241,9 @@ function AINPCS.UpsertLibraryEntry(entry)
     if not entry.id or entry.id == "" then
         entry.id = tostring(os.time()) .. "-" .. math.random(1000, 9999)
     end
+    entry.voiceId = Voices.NormaliseId(entry.voiceId or "")
+    entry.weapon  = entry.weapon or "none"
+    entry.bodyModel = entry.bodyModel or ""
 
     for i, existing in ipairs(library) do
         if existing.id == entry.id then
@@ -150,384 +270,674 @@ function AINPCS.RemoveLibraryEntry(id)
 end
 
 -- =============================================================================
--- Voice service (local relay) helpers
+-- 100% In-Game Fish Audio Service (No external relay / .bat required!)
 -- =============================================================================
 
-local cvRelay = CreateClientConVar("ainpc_voice_relay_url", "", true, false,
-    "Your own voice service address. Empty = server default / http://localhost:7171")
+local cachedCredits = nil
+local creditsFetchedAt = 0
 
--- localhost, not 127.0.0.1: the PowerShell relay binds a HttpListener prefix of
--- "http://localhost:7171/", and HTTP.sys matches prefixes on the Host header. A
--- request to 127.0.0.1 gets "400 Invalid Hostname" from Windows itself, which is
--- indistinguishable from the service being down. hostname works for the Python
--- relay too, so one default covers both backends.
-local DEFAULT_RELAY = "http://localhost:7171"
-
---- Whatever the player/server asked for, before any probing.
-function AINPCS.RelayConfiguredBase()
-    local url = cvRelay and cvRelay:GetString() or ""
-    if url == "" then url = GetGlobalString("AINPCVoiceRelay", "") or "" end
-    if url == "" then url = DEFAULT_RELAY end
-    return (string.gsub(url, "/+$", ""))
+--- 1234 -> "1.2k", 1234567 -> "1.2m"
+function AINPCS.FormatCount(n)
+    n = tonumber(n) or 0
+    if n >= 1000000 then return string.format("%.1fm", n / 1000000) end
+    if n >= 10000 then return string.format("%.0fk", n / 1000) end
+    if n >= 1000 then return string.format("%.1fk", n / 1000) end
+    return tostring(math.floor(n))
 end
 
---- Effective base: the configured one, unless a probe found the other spelling
---- of the same host working.
-function AINPCS.RelayBase()
-    return AINPCS._relayBase or AINPCS.RelayConfiguredBase()
+--- Collapse a voice title down to a comparison key so the dozens of
+--- "Rick Sanchez (Text To Speech)" / "rick sanchez TTS" clones count as one.
+local function dedupeKey(label)
+    local l = string.lower(tostring(label or ""))
+    l = string.gsub(l, "%b()", " ")            -- (anything)
+    l = string.gsub(l, "%b[]", " ")            -- [anything]
+    l = string.gsub(l, "text%s*to%s*speech", " ")
+    l = string.gsub(l, "%f[%a]tts%f[%A]", " ")
+    l = string.gsub(l, "%f[%a]ai%f[%A]", " ")
+    l = string.gsub(l, "%f[%a]voice%s*model%f[%A]", " ")
+    l = string.gsub(l, "%f[%a]vc%s*model%f[%A]", " ")
+    l = string.gsub(l, "%f[%a]voice%f[%A]", " ")
+    l = string.gsub(l, "%f[%a]v%d%f[%A]", " ")
+    l = string.gsub(l, "[^%w%s]", " ")
+    l = string.gsub(l, "%s+", " ")
+    return AINPCS.Trim(l)
 end
+AINPCS.VoiceDedupeKey = dedupeKey
 
--- The convar is FCVAR_ARCHIVE, so a stale value from an older build outlives the
--- default. Forget what a probe learned when the player changes it.
-cvars.AddChangeCallback("ainpc_voice_relay_url", function()
-    AINPCS._relayBase = nil
-end)
+--- Turn a raw Fish Audio /model item into the small shape the browser uses.
+--- Returns nil for anything that cannot actually speak (untrained, non-TTS,
+--- taken down) or that we cannot reference.
+local function normaliseModel(m)
+    if not istable(m) then return nil end
+    local id = m._id
+    if not isstring(id) or id == "" then return nil end
+    if not string.match(id, "^[A-Za-z0-9_%-]+$") then return nil end
+    if m.state and m.state ~= "trained" then return nil end
+    if m.type and m.type ~= "tts" then return nil end
+    if m.dmca_taken_down == true then return nil end
 
---- The other spelling of the same loopback host. The PowerShell relay registers
---- its HttpListener for "localhost" only, and HTTP.sys matches prefixes against the
---- Host header, so http://127.0.0.1:7171 is answered by Windows itself with
---- "400 Invalid Hostname" while the service is perfectly healthy. Both spellings
---- mean this machine, so try both and remember which one answered.
-local function alternateHost(url)
-    if string.find(url, "//localhost", 1, true) then
-        return (string.gsub(url, "//localhost", "//127.0.0.1", 1))
-    end
-    if string.find(url, "//127.0.0.1", 1, true) then
-        return (string.gsub(url, "//127%.0%.0%.1", "//localhost", 1))
-    end
-    if string.find(url, "//[::1]", 1, true) then
-        return (string.gsub(url, "//[[]::1[]]", "//localhost", 1))
-    end
-    return nil
-end
+    local label = AINPCS.Trim(tostring(m.title or id))
+    if label == "" then label = id end
+    if #label > 64 then label = string.sub(label, 1, 63) .. "…" end
 
-AINPCS.RelayAlternateHost = alternateHost
-
---- Low-level call: callback(code, rawBody). code is a number on an HTTP response
---- and a string when the request never completed.
-local function relayCall(base, path, method, body, callback)
-    local opts = {
-        url = base .. path,
-        method = method or "get",
-        headers = { ["Accept"] = "application/json" },
-        success = function(code, response) callback(code, response or "") end,
-        failed = function(err) callback(tostring(err), "") end,
-    }
-
-    if body then
-        opts.type = "application/json"
-        opts.body = body
-    end
-
-    HTTP(opts)
-end
-
-local STATUS_FILE  = "ainpc_relay_status.json"
-local STATUS_FRESH = 20      -- seconds; the relay rewrites it every 2s while idle
-
--- Garry's Mod refuses client HTTP to private networks -- "Requests to local
--- resources are not allowed" -- unless the game was launched with -allowlocalhttp.
--- The panel cannot depend on a launch parameter, so the two control operations go
--- through files in garrysmod/data: the relay publishes the voice list, and picks up
--- key changes the panel writes. Audio is unaffected: sound.PlayURL is BASS, not the
--- Lua HTTP shim.
-local VOICES_FILE  = "ainpc_relay_voices.json"
-local COMMAND_FILE = "ainpc_relay_command.json"
-
-local function readDataTable(name)
-    if not file.Exists(name, "DATA") then return nil end
-    local raw = file.Read(name, "DATA")
-    if not raw or raw == "" then return nil end
-    local parsed = AINPCS.SafeJSON(raw)
-    return istable(parsed) and parsed or nil
-end
-
-local function relayGet(path, callback)
-    relayCall(AINPCS.RelayBase(), path, "get", nil, function(code, raw)
-        callback((code == 200) and AINPCS.SafeJSON(raw) or nil, code, raw)
-    end)
-end
-
-function AINPCS.RelayVoices(query, callback)
-    local published = readDataTable(VOICES_FILE)
-
-    if published and istable(published.voices) then
-        local needle = string.lower(AINPCS.Trim(query or ""))
-        local out, seen = {}, {}
-
-        for _, v in ipairs(published.voices) do
-            if isstring(v.name) and isstring(v.label) and not seen[v.name] then
-                local matches = needle == ""
-                    or string.find(string.lower(v.label), needle, 1, true)
-                    or string.find(string.lower(v.name), needle, 1, true)
-
-                if matches then
-                    seen[v.name] = true
-                    Voices.Register("relay:" .. v.name, v.label)
-                    out[#out + 1] = { name = v.name, label = v.label }
-                end
+    -- Free, pre-rendered preview. Playing this costs no credits.
+    local sample = nil
+    if istable(m.samples) then
+        for _, s in ipairs(m.samples) do
+            if istable(s) and isstring(s.audio) and s.audio ~= "" then
+                sample = s.audio
+                break
             end
         end
+    end
 
+    local langs = {}
+    if istable(m.languages) then
+        for _, lg in ipairs(m.languages) do
+            if isstring(lg) then langs[#langs + 1] = lg end
+        end
+    end
+
+    return {
+        id      = id,
+        label   = label,
+        key     = dedupeKey(label),
+        uses    = tonumber(m.task_count) or 0,
+        likes   = tonumber(m.like_count) or 0,
+        marks   = tonumber(m.mark_count) or 0,
+        langs   = langs,
+        sample  = sample,
+        cover   = m.cover_image,
+        desc    = AINPCS.Trim(tostring(m.description or "")),
+    }
+end
+AINPCS.NormaliseFishModel = normaliseModel
+
+--- Fetch one page of the Fish Audio voice library, deduped and popularity sorted.
+--- opts = { query, page, sortBy = "task_count"|"score"|"created_at", language, limit }
+--- callback(voices, err)  -- voices is always a table (possibly empty)
+function AINPCS.FishListVoices(opts, callback)
+    opts = opts or {}
+    callback = callback or function() end
+
+    local query = AINPCS.Trim(opts.query or "")
+    local page  = math.max(1, tonumber(opts.page) or 1)
+    local sortBy = opts.sortBy or "task_count"
+    local lang  = AINPCS.Trim(opts.language or "")
+    local limit = math.Clamp(tonumber(opts.limit) or 50, 1, 100)
+
+    local params = {
+        "page_size=" .. limit,
+        "page_number=" .. page,
+        "sort_by=" .. Voices.Encode(sortBy),
+    }
+    if query ~= "" then params[#params + 1] = "title=" .. Voices.Encode(query) end
+    if lang ~= "" then params[#params + 1] = "language=" .. Voices.Encode(lang) end
+
+    local headers = { ["Accept"] = "application/json" }
+    local key = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    if key ~= "" then headers["Authorization"] = "Bearer " .. key end
+
+    HTTP({
+        url = FISH_API .. "/model?" .. table.concat(params, "&"),
+        method = "get",
+        headers = headers,
+        success = function(code, raw)
+            local parsed = AINPCS.SafeJSON(raw)
+            if code ~= 200 or not istable(parsed) then
+                local msg = (istable(parsed) and (parsed.message or parsed.error)) or ("HTTP " .. tostring(code))
+                callback({}, tostring(msg))
+                return
+            end
+
+            local items = parsed.items or {}
+            local out, seenKeys = {}, {}
+
+            for _, m in ipairs(items) do
+                local v = normaliseModel(m)
+                if v then
+                    -- Dedupe on the collapsed title: keep the most-used upload of
+                    -- the same character, drop the clones/duplicates entirely.
+                    if v.key ~= "" and seenKeys[v.key] then
+                        local prev = seenKeys[v.key]
+                        if v.uses > prev.uses then
+                            for i, existing in ipairs(out) do
+                                if existing == prev then out[i] = v break end
+                            end
+                            seenKeys[v.key] = v
+                        end
+                    else
+                        if v.key ~= "" then seenKeys[v.key] = v end
+                        out[#out + 1] = v
+                    end
+                end
+            end
+
+            -- Sorting: prefer popularity, then likes, then a stable title order.
+            if sortBy == "task_count" or sortBy == "score" then
+                table.sort(out, function(a, b)
+                    if a.uses ~= b.uses then return a.uses > b.uses end
+                    if a.likes ~= b.likes then return a.likes > b.likes end
+                    return string.lower(a.label) < string.lower(b.label)
+                end)
+            elseif sortBy == "created_at" then
+                table.sort(out, function(a, b) return a.label < b.label end)
+            end
+
+            callback(out, nil, parsed)
+        end,
+        failed = function(err)
+            callback({}, tostring(err))
+        end,
+    })
+end
+
+--- Look up a single Fish model (used when the user pastes a 32-hex id).
+function AINPCS.FishGetVoice(modelId, callback)
+    modelId = AINPCS.Trim(modelId or "")
+    if modelId == "" then callback(nil, "no id") return end
+
+    local headers = { ["Accept"] = "application/json" }
+    local key = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    if key ~= "" then headers["Authorization"] = "Bearer " .. key end
+
+    HTTP({
+        url = FISH_API .. "/model/" .. Voices.Encode(modelId),
+        method = "get",
+        headers = headers,
+        success = function(code, raw)
+            if code ~= 200 then callback(nil, "HTTP " .. tostring(code)) return end
+            local v = normaliseModel(AINPCS.SafeJSON(raw))
+            if not v then callback(nil, "model not found or not usable") return end
+            callback(v, nil)
+        end,
+        failed = function(err) callback(nil, tostring(err)) end,
+    })
+end
+
+--- Free preview playback (pre-rendered samples cost no credits).
+local sampleChannel = nil
+
+function AINPCS.StopSample()
+    if IsValid(sampleChannel) then pcall(sampleChannel.Stop, sampleChannel) end
+    sampleChannel = nil
+end
+
+function AINPCS.PlaySampleURL(url, volume)
+    if not isstring(url) or url == "" then return false end
+    AINPCS.StopSample()
+
+    sound.PlayURL(url, "mono noplay", function(snd, errId, errName)
+        if not IsValid(snd) then
+            AINPCS.DebugPrint("[AI-NPCs] sample failed " .. tostring(errId) .. " " .. tostring(errName))
+            return
+        end
+        snd:SetVolume(math.Clamp(volume or 0.7, 0, 1))
+        snd:Play()
+        sampleChannel = snd
+    end)
+
+    return true
+end
+
+function AINPCS.IsVoicePinned(modelId)
+    if not modelId or modelId == "" then return false end
+    for _, p in ipairs(AINPCS.Settings.pinnedVoices or {}) do
+        if p.name == modelId then return true end
+    end
+    return false
+end
+
+function AINPCS.TogglePinVoice(modelId, label)
+    if not modelId or modelId == "" then return false end
+    AINPCS.Settings.pinnedVoices = AINPCS.Settings.pinnedVoices or {}
+    for i, p in ipairs(AINPCS.Settings.pinnedVoices) do
+        if p.name == modelId then
+            table.remove(AINPCS.Settings.pinnedVoices, i)
+            AINPCS.SaveSettings()
+            return false
+        end
+    end
+    table.insert(AINPCS.Settings.pinnedVoices, 1, { name = modelId, label = label or modelId })
+    Voices.Register("fish:" .. modelId, label or modelId)
+    AINPCS.SaveSettings()
+    return true
+end
+
+-- Check Fish Audio status & account credit directly over HTTPS
+function AINPCS.RelayHealth(callback)
+    local key = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    if key == "" then
+        callback({
+            ok      = true,
+            key_set = false,
+            builtin = true,
+            presets = #(AINPCS.Settings.pinnedVoices or {}),
+        }, 200)
+        return
+    end
+
+    if cachedCredits ~= nil and (RealTime() - creditsFetchedAt) < 45 then
+        callback({
+            ok      = true,
+            key_set = true,
+            credits = cachedCredits,
+            builtin = true,
+            presets = #(AINPCS.Settings.pinnedVoices or {}),
+        }, 200)
+        return
+    end
+
+    HTTP({
+        url = FISH_API .. "/wallet/self/api-credit",
+        method = "get",
+        headers = {
+            ["Authorization"] = "Bearer " .. key,
+            ["Accept"]        = "application/json",
+        },
+        success = function(code, raw)
+            local parsed = AINPCS.SafeJSON(raw)
+            if code == 200 and istable(parsed) then
+                cachedCredits = tonumber(parsed.credit)
+                creditsFetchedAt = RealTime()
+                callback({
+                    ok      = true,
+                    key_set = true,
+                    credits = cachedCredits,
+                    builtin = true,
+                    presets = #(AINPCS.Settings.pinnedVoices or {}),
+                }, 200)
+            elseif code == 401 or code == 403 then
+                callback({
+                    ok           = true,
+                    key_set      = false,
+                    key_rejected = true,
+                    builtin      = true,
+                }, code)
+            else
+                callback({
+                    ok      = true,
+                    key_set = true,
+                    credits = cachedCredits,
+                    builtin = true,
+                }, code)
+            end
+        end,
+        failed = function(err)
+            callback({
+                ok      = true,
+                key_set = true,
+                credits = cachedCredits,
+                builtin = true,
+                net_err = tostring(err),
+            }, tostring(err))
+        end,
+    })
+end
+
+-- Validate and save the player's Fish Audio API key directly in-game
+function AINPCS.RelaySaveKey(key, callback)
+    key = AINPCS.Trim(key or "")
+    if key == "" then
+        AINPCS.Settings.fishKey = ""
+        cachedCredits = nil
+        creditsFetchedAt = 0
+        AINPCS.SaveSettings()
+        if callback then callback(true, 200, { cleared = true }) end
+        return
+    end
+
+    HTTP({
+        url = FISH_API .. "/wallet/self/api-credit",
+        method = "get",
+        headers = {
+            ["Authorization"] = "Bearer " .. key,
+            ["Accept"]        = "application/json",
+        },
+        success = function(code, raw)
+            local parsed = AINPCS.SafeJSON(raw)
+            if code == 200 and istable(parsed) then
+                AINPCS.Settings.fishKey = key
+                cachedCredits = tonumber(parsed.credit)
+                creditsFetchedAt = RealTime()
+                AINPCS.SaveSettings()
+                if callback then callback(true, 200, parsed) end
+            else
+                local errMsg = (istable(parsed) and (parsed.message or parsed.error)) or ("HTTP " .. tostring(code))
+                if callback then callback(false, code, { error = "Fish Audio rejected the key (" .. tostring(errMsg) .. ")" }) end
+            end
+        end,
+        failed = function(err)
+            if callback then callback(false, 0, { error = "Could not reach api.fish.audio: " .. tostring(err) }) end
+        end,
+    })
+end
+
+-- Search built-in voices, pinned Fish presets, and live Fish Audio catalog directly from GMod
+function AINPCS.RelayVoices(query, callback)
+    local q = AINPCS.Trim(query or "")
+    local qLow = string.lower(q)
+    local out = {}
+    local seen = {}
+
+    local function addEntry(voiceId, name, label, source, isPinned)
+        if not voiceId or seen[voiceId] then return end
+        seen[voiceId] = true
+        table.insert(out, {
+            id     = voiceId,
+            name   = name or voiceId,
+            label  = label or name or voiceId,
+            source = source or "Fish Audio",
+            pinned = isPinned == true,
+        })
+    end
+
+    -- 1. Pinned / Starter Fish Audio character voices matching query
+    for _, p in ipairs(AINPCS.Settings.pinnedVoices or {}) do
+        if isstring(p.name) and isstring(p.label) then
+            if qLow == "" or string.find(string.lower(p.label), qLow, 1, true) or string.find(string.lower(p.name), qLow, 1, true) then
+                Voices.Register("fish:" .. p.name, p.label)
+                addEntry("fish:" .. p.name, p.name, p.label, "Fish Audio (Pinned)", true)
+            end
+        end
+    end
+
+    -- 2. Built-in keyless voices (Google TTS + Microsoft SAPI4) matching query
+    for _, v in ipairs(Voices.list or {}) do
+        if v.engine == "google" or v.engine == "sapi4" then
+            if qLow == "" or string.find(string.lower(v.label), qLow, 1, true) or string.find(string.lower(v.id), qLow, 1, true) then
+                local src = (v.engine == "google") and "Built-in (Free)" or "Retro SAPI4 (Free)"
+                addEntry(v.id, v.id, v.label, src, false)
+            end
+        end
+    end
+
+    -- If no search query, return pinned Fish voices + built-in voices immediately,
+    -- and if the user has a Fish key, also fetch top trending Fish voices in the background.
+    if q == "" then
         callback(out)
         return
     end
 
-    -- No published list: an older relay. HTTP only works with -allowlocalhttp.
-    local path = "/voices?limit=40"
-    if query and query ~= "" then path = "/voices?q=" .. Voices.Encode(query) .. "&limit=20" end
-    relayGet(path, function(body, code)
-        if istable(body) and istable(body.voices) then
-            for _, v in ipairs(body.voices) do
-                if isstring(v.name) and isstring(v.label) then
-                    Voices.Register("relay:" .. v.name, v.label)
+    local headers = { ["Accept"] = "application/json" }
+    local key = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    if key ~= "" then
+        headers["Authorization"] = "Bearer " .. key
+    end
+
+    -- Direct 32-hex Fish Audio model ID lookup
+    if string.match(q, "^[0-9a-fA-F]+$") and #q >= 24 then
+        HTTP({
+            url = FISH_API .. "/model/" .. Voices.Encode(q),
+            method = "get",
+            headers = headers,
+            success = function(code, raw)
+                local m = (code == 200) and AINPCS.SafeJSON(raw) or nil
+                if istable(m) and isstring(m._id) then
+                    local title = AINPCS.Trim(tostring(m.title or m._id))
+                    if #title > 60 then title = string.sub(title, 1, 60) end
+                    Voices.Register("fish:" .. m._id, title)
+                    table.insert(out, 1, {
+                        id     = "fish:" .. m._id,
+                        name   = m._id,
+                        label  = title,
+                        source = "Fish Audio (ID)",
+                        pinned = AINPCS.IsVoicePinned(m._id),
+                    })
                 end
-            end
-            callback(body.voices)
-        else
-            callback({}, code)
-        end
-    end)
-end
-
---- Probes /health on the configured base and, if that fails, on the other
---- spelling of the same host. callback(info, code):
----   info = the health payload, or { unparsed = true } when something answered 200
----          with a body that is not our JSON, or nil when nothing answered at all.
----   code = HTTP status (number) or the transport error (string).
-
--- The relay runs on this machine and publishes a heartbeat file next to the game's
--- data. Reading it is how "is the relay running?" is answered now: no network, no
--- host-name guessing, and it carries the exact URL the relay bound.
-
---- (status, error) — status is the parsed file with .age and .fresh added.
-function AINPCS.ReadRelayStatus()
-    if not file.Exists(STATUS_FILE, "DATA") then return nil, "no status file" end
-
-    local raw = file.Read(STATUS_FILE, "DATA")
-    if not raw or raw == "" then return nil, "empty status file" end
-
-    local parsed = AINPCS.SafeJSON(raw)
-    if not istable(parsed) then return nil, "unreadable status file" end
-
-    local beat = tonumber(parsed.heartbeat)
-    parsed.age = beat and (os.time() - beat) or nil
-    parsed.fresh = parsed.age ~= nil and math.abs(parsed.age) <= STATUS_FRESH
-
-    return parsed
-end
-
-function AINPCS.RelayHealth(callback)
-    local status = AINPCS.ReadRelayStatus()
-
-    if status and status.fresh then
-        -- The file proves the process is alive and tells us which URL it bound, so
-        -- the localhost/127.0.0.1 question never comes up.
-        if isstring(status.url) and status.url ~= "" then
-            AINPCS._relayBase = (string.gsub(status.url, "/+$", ""))
-        end
-
-        AINPCS._relayTried = AINPCS.RelayBase()
-
-        local info = {
-            ok        = true,
-            key_set   = status.key_set,
-            credits   = status.credits,
-            presets   = status.presets,
-            tts_model = status.tts_model,
-            from_file = true,
-            age       = status.age,
-        }
-
-        -- Still confirm the HTTP path: /voices and /tts need it, and the file only
-        -- proves the process exists, not that the game can talk to it.
-        relayCall(AINPCS.RelayBase(), "/health", "get", nil, function(code, raw)
-            local parsed = AINPCS.SafeJSON(raw)
-            if code == 200 and istable(parsed) then
-                callback(parsed, 200, raw)
-            else
-                -- Alive but unreachable from the game. The file tells us it is up;
-                -- saying "not running" here would send people restarting a service
-                -- that never stopped.
-                info.file_only = true
-                info.code = code
-                info.local_blocked = isstring(code)
-                    and string.find(string.lower(code), "local resources", 1, true) ~= nil
-                callback(info, code, raw)
-            end
-        end)
+                callback(out)
+            end,
+            failed = function() callback(out) end,
+        })
         return
     end
 
-    -- No fresh file: the relay is not running, or it is an older build without the
-    -- heartbeat. Fall back to probing both spellings over HTTP.
-    local primary = AINPCS.RelayConfiguredBase()
-    local candidates = { primary }
-
-    local alt = alternateHost(primary)
-    if alt and alt ~= primary then candidates[#candidates + 1] = alt end
-
-    AINPCS._relayTried = table.concat(candidates, "  or  ")
-
-    local function attempt(index)
-        local base = candidates[index]
-        if not base then
-            AINPCS._relayBase = nil
-            callback(nil, nil, nil)
-            return
-        end
-
-        relayCall(base, "/health", "get", nil, function(code, raw)
-            if code == 200 then
-                local parsed = AINPCS.SafeJSON(raw)
-                AINPCS._relayBase = base
-
-                if istable(parsed) then
-                    callback(parsed, 200, raw)
-                else
-                    -- Something is answering on this port. Reporting "not running"
-                    -- here would be a lie; say reachable-but-unreadable instead.
-                    callback({ ok = true, unparsed = true, raw = raw }, 200, raw)
+    -- Live title search across Fish Audio's model catalog
+    HTTP({
+        url = FISH_API .. "/model?page_size=50&page_number=1&title=" .. Voices.Encode(q),
+        method = "get",
+        headers = headers,
+        success = function(code, raw)
+            local parsed = (code == 200) and AINPCS.SafeJSON(raw) or nil
+            if istable(parsed) and istable(parsed.items) then
+                local remote = {}
+                for _, m in ipairs(parsed.items) do
+                    if istable(m) and isstring(m._id) and m._id ~= "" then
+                        local stateOk = (not m.state) or (m.state == "trained")
+                        local typeOk  = (not m.type) or (m.type == "tts")
+                        if stateOk and typeOk then
+                            local title = AINPCS.Trim(tostring(m.title or m._id))
+                            if #title > 60 then title = string.sub(title, 1, 60) end
+                            Voices.Register("fish:" .. m._id, title)
+                            table.insert(remote, {
+                                name  = m._id,
+                                label = title,
+                            })
+                        end
+                    end
                 end
-                return
+                table.sort(remote, function(a, b)
+                    local aStarts = string.sub(string.lower(a.label), 1, #qLow) == qLow
+                    local bStarts = string.sub(string.lower(b.label), 1, #qLow) == qLow
+                    if aStarts ~= bStarts then return aStarts end
+                    return string.lower(a.label) < string.lower(b.label)
+                end)
+                for _, r in ipairs(remote) do
+                    addEntry("fish:" .. r.name, r.name, r.label, "Fish Audio", AINPCS.IsVoicePinned(r.name))
+                end
             end
-
-            attempt(index + 1)
-        end)
-    end
-
-    attempt(1)
+            callback(out)
+        end,
+        failed = function()
+            callback(out)
+        end,
+    })
 end
 
---- Saves the Fish key. With a live relay this is a file the relay picks up; the
---- panel then polls the status file for the relay's verdict, because the relay is
---- the only side that can ask Fish Audio whether the key is real.
-function AINPCS.RelaySaveKey(key, callback)
-    local status = AINPCS.ReadRelayStatus()
-
-    if not (status and status.fresh) then
-        -- No heartbeat to answer through, so a command file would sit unread.
-        relayCall(AINPCS.RelayBase(), "/config", "post", util.TableToJSON({ key = key }),
-            function(code, raw)
-                local parsed = AINPCS.SafeJSON(raw)
-                callback(code == 200 and istable(parsed), code or 0,
-                         istable(parsed) and parsed or { error = tostring(raw) })
-            end)
+-- Direct client-side Fish Audio TTS synthesis + disk cache (data/ainpc_tts/)
+function AINPCS.FishSynthesize(modelId, text, callback)
+    text = AINPCS.CleanText(text or "", 400)
+    if text == "" or not modelId or modelId == "" then
+        if callback then callback(nil, "empty text or voice") end
         return
     end
 
-    local id = tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
-    file.Write(COMMAND_FILE, util.TableToJSON({ op = "setkey", key = key, id = id }))
+    if not file.IsDir("ainpc_tts", "DATA") then
+        file.CreateDir("ainpc_tts")
+    end
 
-    local timerName = "AINPC_RelayKeyPoll_" .. id
-    local attempts  = 0
+    local hash = util.CRC(modelId .. "|" .. text)
+    local mp3Path = "ainpc_tts/fish_" .. hash .. ".mp3"
+    local wavPath = "ainpc_tts/fish_" .. hash .. ".wav"
 
-    -- The relay validates the key against Fish Audio before answering, and that
-    -- round trip can take several seconds on a rejection, so allow ~20s.
-    timer.Create(timerName, 0.25, 80, function()
-        attempts = attempts + 1
+    if file.Exists(mp3Path, "DATA") and (file.Size(mp3Path, "DATA") or 0) > 256 then
+        if callback then callback("data/" .. mp3Path, nil) end
+        return
+    end
+    if file.Exists(wavPath, "DATA") and (file.Size(wavPath, "DATA") or 0) > 256 then
+        if callback then callback("data/" .. wavPath, nil) end
+        return
+    end
 
-        local current = AINPCS.ReadRelayStatus()
-        local result  = current and current.command_result
+    local key = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    if key == "" then
+        if callback then callback(nil, "No Fish Audio API key set. Paste your Fish Audio key in Settings.") end
+        return
+    end
 
-        if istable(result) and tostring(result.id) == id then
-            timer.Remove(timerName)
-            callback(result.ok and true or false, result.ok and 200 or 0,
-                     { error = tostring(result.error or "") })
-        elseif attempts >= 80 then
-            callback(false, 0, { error = "the relay did not answer the key file - is its window still open?" })
-        end
-    end)
+    HTTP({
+        url = FISH_API .. "/v1/tts",
+        method = "post",
+        type = "application/json",
+        headers = {
+            ["Authorization"] = "Bearer " .. key,
+            ["Content-Type"]  = "application/json",
+            ["model"]         = FISH_MODEL,
+        },
+        body = util.TableToJSON({
+            text         = text,
+            reference_id = modelId,
+            format       = "mp3",
+            sample_rate  = 44100,
+            normalize    = true,
+            latency      = "normal",
+            prosody      = { speed = 1, volume = 0, normalize_loudness = true },
+        }),
+        success = function(code, body)
+            if code == 200 and body and #body > 256 then
+                local isWav = (string.sub(body, 1, 4) == "RIFF")
+                local relPath = isWav and wavPath or mp3Path
+                file.Write(relPath, body)
+                if callback then callback("data/" .. relPath, nil) end
+            else
+                local parsed = AINPCS.SafeJSON(body)
+                local msg = (istable(parsed) and (parsed.message or parsed.error)) or ("HTTP " .. tostring(code))
+                if callback then callback(nil, tostring(msg)) end
+            end
+        end,
+        failed = function(err)
+            if callback then callback(nil, tostring(err)) end
+        end,
+    })
 end
 
 -- =============================================================================
--- Diagnostics
---
--- "the panel says the voice service is down but it is running" has exactly three
--- causes -- wrong host spelling, wrong port, or something else squatting on the
--- port -- and they look identical from inside the panel. This prints which one.
+-- Hidden DHTML Localhost Relay (for local Ollama without -allowlocalhttp)
 -- =============================================================================
 
-concommand.Add("ainpc_voice_diag", function()
-    local configured = AINPCS.RelayConfiguredBase()
+local dhtmlPanels = {}
+local incomingRelay = {}
+local RELAY_CHUNK = 28000
 
-    MsgC(Color(90, 165, 255), "\n[AI NPCs] voice relay diagnostics\n")
-    MsgN("  ainpc_voice_relay_url  = ", string.format("%q", cvRelay and cvRelay:GetString() or ""))
-    MsgN("  AINPCVoiceRelay (srv)  = ", string.format("%q", GetGlobalString("AINPCVoiceRelay", "") or ""))
-    MsgN("  configured base        = ", configured)
-    MsgN("  effective base         = ", AINPCS.RelayBase())
+local RELAY_JS = [[
+(function(){
+  var id = %d, q = %s;
+  var opts = { method: q.method || "GET", headers: q.headers || {} };
+  if (q.body !== undefined && q.body !== null && opts.method !== "GET") opts.body = q.body;
+  fetch(q.url, opts).then(function(r){
+    return r.arrayBuffer().then(function(b){
+      var u = new Uint8Array(b), s = "", i;
+      for (i = 0; i < u.length; i += 32768) s += String.fromCharCode.apply(null, u.subarray(i, i + 32768));
+      ainpc.done(id, r.status, btoa(s));
+    });
+  }).catch(function(e){ ainpc.fail(id, String(e)); });
+})();
+]]
 
-    local status, why = AINPCS.ReadRelayStatus()
-    if status then
-        MsgN(string.format("  status file            = %s (age %ss, fresh=%s, url=%s)",
-            STATUS_FILE, tostring(status.age), tostring(status.fresh), tostring(status.url)))
-    else
-        MsgN("  status file            = none (" .. tostring(why) .. ")")
+local function sendRelayReply(id, statusCode, body)
+    body = body or ""
+    local total = math.max(1, math.ceil(#body / RELAY_CHUNK))
+    for i = 1, total do
+        local part = string.sub(body, (i - 1) * RELAY_CHUNK + 1, i * RELAY_CHUNK)
+        net.Start("AINPC_LocalRelayRes")
+        net.WriteUInt(id, 16)
+        net.WriteUInt(i, 8)
+        net.WriteUInt(total, 8)
+        net.WriteUInt(statusCode, 16)
+        net.WriteUInt(#part, 16)
+        net.WriteData(part, #part)
+        net.SendToServer()
+    end
+end
+
+local function getRelayPanel(origin)
+    local p = dhtmlPanels[origin]
+    if p and IsValid(p.html) then return p end
+
+    p = { queue = {}, ready = false }
+    dhtmlPanels[origin] = p
+
+    local html = vgui.Create("DHTML")
+    p.html = html
+    html:SetSize(16, 16)
+    html:SetPos(-32, -32)
+    html:SetPaintedManually(true)
+    html:SetMouseInputEnabled(false)
+    html:SetKeyboardInputEnabled(false)
+
+    html:AddFunction("ainpc", "done", function(id, status, b64)
+        local decoded = util.Base64Decode(b64 or "") or ""
+        sendRelayReply(tonumber(id) or 0, math.Clamp(tonumber(status) or 0, 1, 65535), decoded)
+    end)
+    html:AddFunction("ainpc", "fail", function(id, err)
+        sendRelayReply(tonumber(id) or 0, 0, "Local request failed (" .. tostring(err) .. ")")
+    end)
+
+    html.OnDocumentReady = function()
+        p.ready = true
+        for _, job in ipairs(p.queue) do
+            html:RunJavascript(string.format(RELAY_JS, job.id, util.TableToJSON(job.q) or "{}"))
+        end
+        p.queue = {}
     end
 
-    local candidates = { configured }
-    local alt = alternateHost(configured)
-    if alt and alt ~= configured then candidates[#candidates + 1] = alt end
+    html:OpenURL(origin .. "/")
 
-    local voices = readDataTable(VOICES_FILE)
-    if voices then
-        MsgN(string.format("  voice list file        = %s (%d voices)",
-            VOICES_FILE, istable(voices.voices) and #voices.voices or 0))
-    else
-        MsgN("  voice list file        = none (the relay publishes it)")
+    timer.Simple(10, function()
+        if dhtmlPanels[origin] ~= p or p.ready then return end
+        for _, job in ipairs(p.queue) do
+            sendRelayReply(job.id, 0, "Could not reach " .. origin .. " — is Ollama running?")
+        end
+        if IsValid(p.html) then p.html:Remove() end
+        dhtmlPanels[origin] = nil
+    end)
+
+    return p
+end
+
+net.Receive("AINPC_LocalRelayReq", function()
+    local id    = net.ReadUInt(16)
+    local idx   = net.ReadUInt(8)
+    local total = net.ReadUInt(8)
+    local len   = net.ReadUInt(16)
+    local data  = net.ReadData(len)
+
+    local buf = incomingRelay[id]
+    if not buf or buf.total ~= total then
+        buf = { parts = {}, got = 0, total = total }
+        incomingRelay[id] = buf
+    end
+    if not buf.parts[idx] then
+        buf.parts[idx] = data
+        buf.got = buf.got + 1
+    end
+    if buf.got < buf.total then return end
+    incomingRelay[id] = nil
+
+    local raw = util.Decompress(table.concat(buf.parts)) or ""
+    local q = AINPCS.SafeJSON(raw)
+    if not istable(q) or not isstring(q.url) or not AINPCS.IsLocalURL(q.url) then
+        sendRelayReply(id, 0, "Invalid local relay request")
+        return
     end
 
-    MsgN("  note                   = Garry's Mod blocks client HTTP to private networks unless launched with -allowlocalhttp")
+    local origin = string.match(q.url, "^(https?://[^/]+)")
+    if not origin then
+        sendRelayReply(id, 0, "Malformed local URL")
+        return
+    end
 
-    local pending = #candidates
-    for _, base in ipairs(candidates) do
-        relayCall(base, "/health", "get", nil, function(code, raw)
-            if code == 200 then
-                MsgN(string.format("  %s  ->  HTTP 200, %d bytes, json=%s",
-                    base, #raw, tostring(istable(AINPCS.SafeJSON(raw)))))
-                MsgN("      ", string.sub(string.gsub(raw, "%s+", " "), 1, 180))
-            elseif type(code) == "number" then
-                MsgN(string.format("  %s  ->  HTTP %d  (something answered, but not the relay)", base, code))
-            else
-                MsgN(string.format("  %s  ->  no response  (%s)", base, tostring(code)))
-            end
-
-            pending = pending - 1
-            if pending == 0 then
-                MsgN("  nothing answering at all? check the relay window is open and the port matches.\n")
-            end
-        end)
+    local p = getRelayPanel(origin)
+    if p.ready then
+        p.html:RunJavascript(string.format(RELAY_JS, id, util.TableToJSON(q) or "{}"))
+    else
+        table.insert(p.queue, { id = id, q = q })
     end
 end)
 
---- Which loopback URL spellings the game actually accepts. Useful because Garry's
---- Mod rejects private-network destinations outright unless launched with
---- -allowlocalhttp, and the fix is a launch option, not an addon setting.
-concommand.Add("ainpc_http_test", function()
-    local port = string.match(AINPCS.RelayConfiguredBase(), ":(%d+)") or "7171"
+-- =============================================================================
+-- Diagnostics command
+-- =============================================================================
 
-    local candidates = {
-        "http://localhost:" .. port .. "/health",
-        "http://127.0.0.1:" .. port .. "/health",
-        "http://%31%32%37.0.0.1:" .. port .. "/health",   -- percent-escaped, older trick
-    }
-
-    MsgC(Color(90, 165, 255), "\n[AI NPCs] HTTP transport test (port " .. port .. ")\n")
-
-    for _, url in ipairs(candidates) do
-        HTTP({
-            url = url,
-            method = "get",
-            success = function(code)
-                MsgN(string.format("  %s  ->  HTTP %s", url, tostring(code)))
-            end,
-            failed = function(err)
-                MsgN(string.format("  %s  ->  refused: %s", url, tostring(err)))
-            end,
-        })
-    end
-
-    MsgN("  add -allowlocalhttp to the game's launch options to permit the first two.\n")
+concommand.Add("ainpc_voice_diag", function()
+    MsgC(Color(90, 165, 255), "\n[AI NPCs] In-game Fish Audio diagnostics\n")
+    local key = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    MsgN("  Fish API Key set  = ", tostring(key ~= ""), " (", AINPCS.RedactKey(key), ")")
+    MsgN("  Pinned voices     = ", tostring(#(AINPCS.Settings.pinnedVoices or {})))
+    MsgN("  Fallback voice    = ", tostring(AINPCS.Settings.fallbackVoice))
+    AINPCS.RelayHealth(function(info, code)
+        MsgN("  Fish API status   = HTTP ", tostring(code), " | credit=", tostring(info and info.credits))
+    end)
 end)
 
 -- =============================================================================
@@ -574,10 +984,10 @@ function AINPCS.ModelList(providerId)
 end
 
 -- =============================================================================
--- Spawning
+-- Spawning & Live NPC Management
 -- =============================================================================
 
--- config = { name, description, voiceId, class, reasoning, speak }
+-- config = { name, description, voiceId, class, weapon, reasoning, speak }
 function AINPCS.Spawn(config)
     local settings = AINPCS.Settings
     local provider = providers.get(settings.provider)
@@ -588,7 +998,7 @@ function AINPCS.Spawn(config)
 
     local key = AINPCS.Trim(settings.apiKeys[settings.provider] or "")
     if provider.id ~= "ollama" and key == "" then
-        AINPCS.PushToast("No API key set. Open Settings and paste one.", "error")
+        AINPCS.PushToast("No API key set for " .. provider.label .. ". Open Settings and paste one.", "error")
         return
     end
 
@@ -596,16 +1006,50 @@ function AINPCS.Spawn(config)
     net.WriteTable({
         provider    = settings.provider,
         apiKey      = key,
+        fishKey     = AINPCS.Trim(settings.fishKey or ""),
         hostname    = settings.hostname or "",
         class       = config.class or "npc_citizen",
+        bodyModel   = config.bodyModel or "",
+        weapon      = config.weapon or "none",
         personality = config.description or "",
-        name        = config.name or "NPC",
+        name        = AINPCS.Trim(config.name or ""),
+        libraryName = AINPCS.Trim(config.libraryName or ""),
         model       = settings.model or "",
         max_tokens  = settings.max_tokens or 2048,
         temperature = settings.temperature,
         reasoning   = config.reasoning or settings.reasoning,
         enableTTS   = config.speak ~= false,
-        voiceId     = config.voiceId or settings.fallbackVoice,
+        voiceId     = Voices.NormaliseId(config.voiceId or settings.fallbackVoice),
     })
+    net.SendToServer()
+end
+
+function AINPCS.CommandNPC(ent, actionName)
+    if not IsValid(ent) then return end
+    net.Start("AINPC_UpdateNPC")
+    net.WriteEntity(ent)
+    net.WriteTable({ op = "action", action = actionName })
+    net.SendToServer()
+end
+
+function AINPCS.ClearNPCMemory(ent)
+    if not IsValid(ent) then return end
+    local idx = ent:EntIndex()
+    if AINPCS.ChatHistory then AINPCS.ChatHistory[idx] = {} end
+    if AINPCS.LastChat then AINPCS.LastChat[idx] = nil end
+    net.Start("AINPC_UpdateNPC")
+    net.WriteEntity(ent)
+    net.WriteTable({ op = "clear_memory" })
+    net.SendToServer()
+end
+
+function AINPCS.UpdateLiveNPC(ent, fields)
+    if not IsValid(ent) or not istable(fields) then return end
+    local payload = table.Copy(fields)
+    payload.op = "edit"
+    payload.fishKey = AINPCS.Trim(AINPCS.Settings.fishKey or "")
+    net.Start("AINPC_UpdateNPC")
+    net.WriteEntity(ent)
+    net.WriteTable(payload)
     net.SendToServer()
 end

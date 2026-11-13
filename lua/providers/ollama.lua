@@ -9,25 +9,58 @@ local provider = {}
 provider.id       = "ollama"
 provider.label    = "Ollama (self-hosted)"
 provider.getKeyUrl = "https://ollama.com/download"
-provider.note     = "Runs locally. Set Hostname to your Ollama host (e.g. 127.0.0.1:11434). API key is optional."
+provider.note     = "Runs locally (default 127.0.0.1:11434). Type any pulled model ID or pick a common preset below."
 
 provider.requiresHostname = true
 provider.allowCustomModel = true
+provider.defaultModel     = "llama3.1:8b"
 
--- No default model list — users type the model they've pulled locally.
-provider.models     = {}
-provider.modelOrder = {}
+provider.modelOrder = {
+    "llama3.1:8b",
+    "llama3.2:3b",
+    "gemma3:12b",
+    "gemma3:4b",
+    "qwen2.5:7b",
+    "qwen3:8b",
+    "deepseek-r1:8b",
+    "mistral:7b",
+}
+
+local function preset(label, reasoning)
+    return {
+        label = label,
+        free = true,
+        price_in = 0,
+        price_out = 0,
+        max_tokens = { min = 64, max = 16384, default = 2048 },
+        temperature = { min = 0, max = 2, default = 1 },
+        reasoning = reasoning and { "none", "low", "medium", "high" } or nil,
+        tool_support = true,
+    }
+end
+
+provider.models = {
+    ["llama3.1:8b"]    = preset("Llama 3.1 8B (local)", false),
+    ["llama3.2:3b"]    = preset("Llama 3.2 3B (fast local)", false),
+    ["gemma3:12b"]     = preset("Gemma 3 12B (local)", false),
+    ["gemma3:4b"]      = preset("Gemma 3 4B (fast local)", false),
+    ["qwen2.5:7b"]     = preset("Qwen 2.5 7B (local)", false),
+    ["qwen3:8b"]       = preset("Qwen 3 8B (local, reasoning)", true),
+    ["deepseek-r1:8b"] = preset("DeepSeek R1 8B (local, reasoning)", true),
+    ["mistral:7b"]     = preset("Mistral 7B (local)", false),
+}
 
 if SERVER then
     function provider.request(npc, callback)
-        local host = AINPCS.NormaliseHostname(npc.hostname or "", "http")
-        if host == "" then
-            return callback("Ollama hostname not set. Open the AI NPCs panel and fill in Hostname.", nil)
+        local rawHost = npc.hostname
+        if not rawHost or AINPCS.Trim(rawHost) == "" then
+            rawHost = "127.0.0.1:11434"
         end
+        local host = AINPCS.NormaliseHostname(rawHost, "http")
 
         local body = {
-            model    = npc.model,
-            messages = npc.history,
+            model    = (npc.model and npc.model ~= "") and npc.model or "llama3.1:8b",
+            messages = npc.messages or npc.history,
             stream   = false,
         }
         if npc.max_tokens then body.max_tokens = npc.max_tokens end
@@ -38,7 +71,8 @@ if SERVER then
             headers["Authorization"] = "Bearer " .. npc.apiKey
         end
 
-        HTTP({
+        local httpFn = AINPCS.HTTP or HTTP
+        httpFn({
             url = host .. "/v1/chat/completions",
             method = "post",
             type = "application/json",
@@ -48,7 +82,7 @@ if SERVER then
                 AINPCS.DebugPrint("[AI-NPCs][Ollama] " .. tostring(code))
                 local parsed = AINPCS.SafeJSON(respBody)
                 if not parsed then
-                    return callback("Invalid JSON from Ollama (HTTP " .. tostring(code) .. "). Is the host URL correct?", nil)
+                    return callback("Invalid JSON from Ollama (HTTP " .. tostring(code) .. "). Is Ollama running at " .. host .. "?", nil)
                 end
                 callback(nil, parsed)
             end,

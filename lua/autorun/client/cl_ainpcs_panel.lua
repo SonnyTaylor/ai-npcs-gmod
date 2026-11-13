@@ -119,8 +119,9 @@ end
 
 local function newDraft()
     return {
-        id = nil, name = "", description = "", voiceId = "",
-        class = "npc_citizen", reasoning = "none", speak = true,
+        id = nil, name = "", description = "", voiceId = "", voiceLabel = "",
+        class = "npc_citizen", bodyModel = "", weapon = "none",
+        reasoning = "none", speak = true,
     }
 end
 
@@ -182,43 +183,25 @@ function AINPCS.OpenClassic()
     function AINPCS.RefreshPill()
         AINPCS.RelayHealth(function(info, code)
             if not IsValid(pill) then return end
+
             if not info then
+                pill:SetTextColor(C.warn)
+                pill:SetText("Fish Audio: unreachable")
+                pillSub:SetText("could not reach api.fish.audio (" .. tostring(code) .. ")")
+            elseif info.key_rejected then
                 pill:SetTextColor(C.bad)
-                if type(code) == "number" then
-                    -- HTTP.sys answers 400 when the Host header does not match the
-                    -- relay's registered prefix (localhost vs 127.0.0.1).
-                    pill:SetText("voice service: unreachable (HTTP " .. code .. ")")
-                    pillSub:SetText(code == 400
-                        and "wrong host - use http://localhost:7171"
-                        or "the relay answered, but not with /health JSON")
-                else
-                    pill:SetText("voice service: NOT running")
-                    pillSub:SetText("tried " .. tostring(AINPCS._relayTried or AINPCS.RelayBase()))
-                end
-            elseif info.local_blocked then
-                pill:SetTextColor(C.good)
-                pill:SetText("voice service: ready (file mode)")
-                pillSub:SetText("Garry's Mod blocks HTTP to loopback; voices and the key use files")
-            elseif info.file_only then
-                pill:SetTextColor(C.warn)
-                pill:SetText("voice service: up, but unreachable from the game")
-                pillSub:SetText(string.format(
-                    "status file is %ss old; HTTP said %s",
-                    tostring(info.age), tostring(info.code)))
-            elseif info.unparsed then
-                pill:SetTextColor(C.warn)
-                pill:SetText("voice service: running, unreadable status")
-                pillSub:SetText("see ainpc_voice_diag in the console")
+                pill:SetText("Fish Audio: key rejected")
+                pillSub:SetText("open Settings and paste a valid Fish Audio key")
             elseif info.key_set then
                 pill:SetTextColor(C.good)
-                pill:SetText("voice service: ready")
-                pillSub:SetText(string.format("credit %s   %s",
+                pill:SetText("Fish Audio: ready")
+                pillSub:SetText(string.format("credit %s   ·   %d pinned voices",
                     type(info.credits) == "number" and string.format("%.2f", info.credits) or "?",
-                    AINPCS.RelayBase()))
+                    info.presets or 0))
             else
                 pill:SetTextColor(C.warn)
-                pill:SetText("voice service: running, no key")
-                pillSub:SetText("paste your Fish Audio key in Settings")
+                pill:SetText("Fish Audio: no key (built-in voices only)")
+                pillSub:SetText("paste your Fish Audio key in Settings for cloned voices")
             end
         end)
     end
@@ -499,100 +482,137 @@ function AINPCS.OpenClassic()
 
         elseif n == 2 then
             heading(stepList, "How should they sound?",
-                "Searches your voice service. Character voices need credit on your Fish Audio account.")
+                "Search all of Fish Audio, or use a free built-in voice. Character voices need credit on your Fish Audio account.")
 
-            local searchRow = field(stepList, 36)
-            local searchE = vgui.Create("DTextEntry", searchRow)
-            searchE:SetWide(CONTENT_W - 120)
-            searchE:SetTall(34)
-            searchE:SetUpdateOnType(true)
-            searchE:SetPlaceholderText("rick sanchez")
+            -- One summary card; the actual picking happens in the voice browser.
+            local card = vgui.Create("DPanel")
+            card:SetTall(78)
+            card.Paint = function(s, w, h)
+                draw.RoundedBox(8, 0, 0, w, h, C.cardAlt)
+            end
+            stepList:Add(card)
 
-            local searchBtn = styledButton(searchRow, "Search", "primary")
-            searchBtn:SetPos(CONTENT_W - 112, 0)
-            searchBtn:SetSize(108, 34)
+            local nameLbl = vgui.Create("DLabel", card)
+            nameLbl:SetPos(16, 14)
+            nameLbl:SetSize(CONTENT_W - 180, 26)
+            nameLbl:SetFont("AINPC_Header")
+            nameLbl:SetTextColor(C.text)
 
-            local listRow = field(stepList, 250)
-            local results = vgui.Create("DListView", listRow)
-            results:SetWide(CONTENT_W)
-            results:SetTall(246)
-            results:AddColumn("Voice")
-            results:SetMultiSelect(false)
+            local subLbl = vgui.Create("DLabel", card)
+            subLbl:SetPos(16, 44)
+            subLbl:SetSize(CONTENT_W - 180, 20)
+            subLbl:SetFont("AINPC_Small")
+            subLbl:SetTextColor(C.sub)
 
-            local statusLbl = text(stepList, "", "AINPC_Small", C.sub, 20)
-
-            local previewBtn = addButton(stepList, "Preview selected voice", "ghost", function()
-                local line = results:GetSelectedLine()
-                if line and line.voiceId then
-                    AINPCS.PreviewVoice(line.voiceId, "Hello, I am " ..
-                        (AINPCS.Trim(draft.name or "") ~= "" and draft.name or "an NPC") .. ".")
+            local function refreshVoiceCard()
+                if AINPCS.IsBlank(draft.voiceId or "") then
+                    draft.voiceId = AINPCS.Settings.fallbackVoice or "google:en"
                 end
-            end, 220)
-
-            local function fill(voices)
-                results:Clear()
-                for _, v in ipairs(voices or {}) do
-                    local line = results:AddLine(v.label)
-                    line.voiceId = "relay:" .. v.name
-                    if draft.voiceId == line.voiceId then results:SelectItem(line) end
-                end
-                statusLbl:SetText(#(voices or {}) == 0
-                    and "no matches - is the voice service running?" or (#(voices or {}) .. " matches, click one"))
+                local v = Voices.Get(draft.voiceId)
+                nameLbl:SetText(v and v.label or draft.voiceId)
+                local isFish = Voices.IsFish(draft.voiceId)
+                subLbl:SetText(isFish
+                    and (AINPCS.Trim(AINPCS.Settings.fishKey or "") ~= ""
+                        and "Fish Audio voice — speaks in game, uses your key's credit"
+                        or "Fish Audio voice — add your Fish Audio key in Settings to use it")
+                    or "Built-in voice — free and keyless")
+                subLbl:SetTextColor(isFish and C.warn or C.sub)
             end
 
-            function results.OnRowSelected(_, _, line)
-                draft.voiceId = line.voiceId
+            local browseBtn = styledButton(card, "Browse voices…", "primary")
+            browseBtn:SetPos(CONTENT_W - 160, 22)
+            browseBtn:SetSize(144, 34)
+            browseBtn.DoClick = function()
+                AINPCS.OpenVoiceBrowser({
+                    voiceId = draft.voiceId,
+                    onPick = function(voiceId, label)
+                        draft.voiceId = voiceId
+                        draft.voiceLabel = label or ""
+                        refreshVoiceCard()
+                    end,
+                })
             end
 
-            local function doSearch()
-                statusLbl:SetText("searching...")
-                AINPCS.RelayVoices(AINPCS.Trim(searchE:GetValue() or ""), fill)
-            end
-            searchBtn.DoClick = doSearch
-            searchE.OnEnter = doSearch
-            doSearch()
+            refreshVoiceCard()
+
+            gap(stepList, 8)
+            local testBtn = addButton(stepList, "Hear this voice", "ghost", function()
+                local who = AINPCS.Trim(draft.name or "") ~= "" and draft.name or "an NPC"
+                AINPCS.PreviewVoice(draft.voiceId, "Hello, I am " .. who .. ".")
+            end, 180)
+            testBtn:SetDisabled(false)
+
+            gap(stepList, 10)
+            text(stepList, "Tip: type any character into the browser's search box (barney, rick, a granny…) — every Fish Audio voice is searchable. Rows marked “free sample” play instantly without spending credit.",
+                "AINPC_Small", C.sub, 46, true)
 
         elseif n == 3 then
-            heading(stepList, "What should they look like?", "Pick the body model.")
+            heading(stepList, "What should they look like?",
+                "NPC bodies and playermodels in one list, with a live 3D preview.")
 
-            local bodyRow = field(stepList, 300)
+            local card = vgui.Create("DPanel")
+            card:SetTall(268)
+            card.Paint = function(s, w, h) draw.RoundedBox(8, 0, 0, w, h, C.cardAlt) end
+            stepList:Add(card)
 
-            local bodyList = vgui.Create("DListView", bodyRow)
-            bodyList:SetPos(0, 0)
-            bodyList:SetSize(CONTENT_W - 260, 296)
-            bodyList:AddColumn("Body")
-
-            local previewBox = vgui.Create("DPanel", bodyRow)
-            previewBox:SetPos(CONTENT_W - 250, 0)
-            previewBox:SetSize(250, 296)
-            previewBox.Paint = function(s, w, h) draw.RoundedBox(8, 0, 0, w, h, C.cardAlt) end
-
-            local preview = vgui.Create("DModelPanel", previewBox)
-            preview:Dock(FILL)
-            preview:SetModel("models/humans/group01/male_07.mdl")
-            preview:SetFOV(46)
+            local preview = vgui.Create("DModelPanel", card)
+            preview:SetPos(0, 0)
+            preview:SetSize(240, 268)
+            preview:SetFOV(42)
             preview.LayoutEntity = function(self, ent)
                 self:RunAnimation()
-                ent:SetAngles(Angle(0, RealTime() * 60, 0))
+                ent:SetAngles(Angle(0, RealTime() * 45, 0))
             end
 
-            local reg = list.Get("NPC") or {}
-            local ids = {}
-            for id in pairs(reg) do table.insert(ids, id) end
-            table.sort(ids)
+            local bodyName = vgui.Create("DLabel", card)
+            bodyName:SetPos(258, 18)
+            bodyName:SetSize(CONTENT_W - 270, 26)
+            bodyName:SetFont("AINPC_Header")
+            bodyName:SetTextColor(C.text)
 
-            for _, id in ipairs(ids) do
-                local data = reg[id]
-                local line = bodyList:AddLine((data and data.Name) or id)
-                line.classId = id
-                if id == draft.class then bodyList:SelectItem(line) end
+            local bodySub = vgui.Create("DLabel", card)
+            bodySub:SetPos(258, 46)
+            bodySub:SetSize(CONTENT_W - 270, 40)
+            bodySub:SetFont("AINPC_Small")
+            bodySub:SetTextColor(C.sub)
+            bodySub:SetWrap(true)
+
+            local function refreshBodyCard()
+                local reg = list.Get("NPC") or {}
+                local data = reg[draft.class]
+                local model = draft.bodyModel
+                if not AINPCS.IsUsableBodyModel(model) then
+                    model = (data and data.Model) or "models/humans/group01/male_07.mdl"
+                end
+                preview:SetModel(model)
+                bodyName:SetText((data and data.Name) or draft.class or "?")
+                bodySub:SetText(string.lower(model))
             end
 
-            function bodyList.OnRowSelected(_, _, line)
-                draft.class = line.classId
-                local data = reg[line.classId]
-                if data and data.Model then preview:SetModel(data.Model) end
+            local browseBtn = styledButton(card, "Browse all bodies…", "primary")
+            browseBtn:SetPos(258, 100)
+            browseBtn:SetSize(200, 36)
+            browseBtn.DoClick = function()
+                AINPCS.OpenBodyBrowser({
+                    class     = draft.class,
+                    bodyModel = draft.bodyModel,
+                    onPick = function(class, model)
+                        draft.class = class
+                        draft.bodyModel = model
+                        refreshBodyCard()
+                    end,
+                })
             end
+
+            local clearBtn = styledButton(card, "Reset to class default", "ghost")
+            clearBtn:SetPos(258, 144)
+            clearBtn:SetSize(200, 32)
+            clearBtn.DoClick = function()
+                draft.bodyModel = ""
+                refreshBodyCard()
+            end
+
+            refreshBodyCard()
 
         elseif n == 4 then
             heading(stepList, "How should they answer?",
@@ -619,13 +639,31 @@ function AINPCS.OpenClassic()
             speak:SetWide(CONTENT_W)
             speak.OnChange = function(_, v) draft.speak = v end
 
+            gap(stepList, 10)
+            text(stepList, "Weapon", "AINPC_Small", C.sub, 20)
+            local wepRow = field(stepList, 36)
+            local wepCombo = vgui.Create("DComboBox", wepRow)
+            wepCombo:SetWide(CONTENT_W)
+            wepCombo:SetTall(34)
+            wepCombo:SetSortItems(false)
+            for _, wid in ipairs(AINPCS.WeaponOrder or {}) do
+                local wInfo = AINPCS.Weapons[wid]
+                if wInfo then
+                    wepCombo:AddChoice(wInfo.label, wid, draft.weapon == wid)
+                end
+            end
+            function wepCombo.OnSelect(_, _, _, data) draft.weapon = data end
+            text(stepList, "The NPC can still switch weapons, drop it, or be told to attack in conversation.",
+                "AINPC_Tiny", C.sub, 18)
+
         else
             heading(stepList, "Ready to save", nil)
 
             local summary = {
                 { "Name",        (AINPCS.Trim(draft.name or "") ~= "" and draft.name) or "(none)" },
                 { "Voice",       voiceLabel(draft.voiceId) },
-                { "Body",        classLabel(draft.class) },
+                { "Body",        (draft.bodyModel ~= "" and AINPCS.Trim(draft.bodyModel)) or classLabel(draft.class) },
+                { "Weapon",      AINPCS.WeaponLabel(draft.weapon) },
                 { "Replies",     draft.reasoning == "none" and "instant" or tostring(draft.reasoning) },
                 { "Speaks",      draft.speak and "yes" or "no" },
                 { "Description", (AINPCS.Trim(draft.description or "") ~= "" and draft.description) or "from the name" },
@@ -712,6 +750,16 @@ function AINPCS.OpenClassic()
     local function persist() AINPCS.SaveSettings() end
 
     heading(sl, "AI provider", "Used for every NPC. You set this once.")
+
+    -- Re-runnable guided setup: provider choice, signup link, key test, Fish key.
+    addButton(sl, "Run setup again (guided)", "ghost", function()
+        if isfunction(AINPCS.OpenSetupWizard) then
+            AINPCS.OpenSetupWizard({ rerun = true })
+        end
+    end, 240)
+
+    text(sl, "Not sure which key to use? The guided setup opens the provider's key page for you and checks that the key works before saving it.",
+        "AINPC_Tiny", C.sub, 30, true)
     local provRow = field(sl, 36)
     local provCombo = vgui.Create("DComboBox", provRow)
     provCombo:SetWide(CONTENT_W)
@@ -835,23 +883,27 @@ function AINPCS.OpenClassic()
 
     divider(sl)
     gap(sl, 10)
-    heading(sl, "Voice service (Fish Audio)",
-        "Character voices need a local helper with your own Fish key. Start it with relay/start.bat.")
+    heading(sl, "Fish Audio voice service",
+        "Built into the addon — no helper program or .bat file. Paste your own Fish Audio key to use cloned character voices and to search the whole library.")
 
     local serviceStatus = text(sl, "checking...", "AINPC_Small", C.sub, 20)
     function AINPCS.RefreshSettingsService()
         AINPCS.RelayHealth(function(info)
             if not IsValid(serviceStatus) then return end
             if not info then
+                serviceStatus:SetTextColor(C.warn)
+                serviceStatus:SetText("Could not reach api.fish.audio (built-in voices still work)")
+            elseif info.key_rejected then
                 serviceStatus:SetTextColor(C.bad)
-                serviceStatus:SetText("NOT running - double-click relay/start.bat")
+                serviceStatus:SetText("Fish Audio rejected that key — paste it again")
             elseif info.key_set then
                 serviceStatus:SetTextColor(C.good)
-                serviceStatus:SetText(string.format("Running - key set - credit %s",
-                    type(info.credits) == "number" and string.format("%.2f", info.credits) or "?"))
+                serviceStatus:SetText(string.format("Connected · credit %s · %d pinned voices",
+                    type(info.credits) == "number" and string.format("%.2f", info.credits) or "?",
+                    info.presets or 0))
             else
                 serviceStatus:SetTextColor(C.warn)
-                serviceStatus:SetText("Running - no key yet, paste one below")
+                serviceStatus:SetText("No key yet — free built-in voices only")
             end
         end)
     end
@@ -861,6 +913,7 @@ function AINPCS.OpenClassic()
     fishE:SetWide(CONTENT_W - 110)
     fishE:SetTall(34)
     fishE:SetPlaceholderText("Fish Audio API key (sk-fish-...)")
+    fishE:SetText(AINPCS.Settings.fishKey or "")
 
     local fishSave = styledButton(fishRow, "Save", "primary")
     fishSave:SetPos(CONTENT_W - 100, 0)
@@ -877,8 +930,14 @@ function AINPCS.OpenClassic()
         end)
     end
 
-    addButton(sl, "Open voice library / pin voices", "ghost", function()
-        gui.OpenURL(AINPCS.RelayBase() .. "/")
+    addButton(sl, "Browse all Fish Audio voices…", "ghost", function()
+        AINPCS.OpenVoiceBrowser({
+            voiceId = S.fallbackVoice,
+            onPick = function(voiceId)
+                S.fallbackVoice = voiceId
+                persist()
+            end,
+        })
     end, 260)
 
     divider(sl)
@@ -891,7 +950,8 @@ function AINPCS.OpenClassic()
     fbCombo:SetWide(CONTENT_W)
     fbCombo:SetTall(34)
     for _, v in ipairs(Voices.list) do
-        if not string.match(v.id, "^relay:") then
+        -- Fallback must stay free/keyless: Fish Audio voices need credit.
+        if not Voices.IsFish(v.id) then
             fbCombo:AddChoice(v.label, v.id, v.id == S.fallbackVoice)
         end
     end

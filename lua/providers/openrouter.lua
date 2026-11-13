@@ -72,13 +72,15 @@ provider.models = {
 
 if SERVER then
     local function buildBody(npc)
+        local q = npc._quirks or {}
+        local tokField = q.tokens_field or "max_tokens"
         local body = {
             model    = npc.model,
-            messages = npc.history,
-            max_tokens = npc.max_tokens,
+            messages = npc.messages or npc.history,
+            [tokField] = npc.max_tokens,
         }
-        if npc.temperature ~= nil then body.temperature = npc.temperature end
-        if npc.reasoning and npc.reasoning ~= "" then
+        if npc.temperature ~= nil and not q.no_temp then body.temperature = npc.temperature end
+        if npc.reasoning and npc.reasoning ~= "" and not q.no_reasoning then
             -- "none" is a real OpenRouter value: reasoning off, first token sooner.
             body.reasoning = { effort = npc.reasoning }
         end

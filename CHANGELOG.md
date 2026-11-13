@@ -3,6 +3,79 @@
 All notable changes to AI NPCs. Format loosely follows Keep a Changelog; this
 addon is shipped through the Steam Workshop, so versions match Workshop updates.
 
+## [4.1.0] — voices work out of the box, NPCs know what is happening
+
+### New — guided setup
+
+- **First-run wizard** (`cl_ainpcs_setup.lua`). Opens the first time the panel is
+  opened without a working AI key, and again any time from Settings → *Run setup
+  again* (or `ainpc_setup`). Five steps: what is needed, pick a provider, get and
+  **verify** the key, optionally connect Fish Audio, summary.
+- Each key step links straight to that provider's key page (`console.groq.com/keys`,
+  `openrouter.ai/keys`, `fish.audio/app/api-keys/`, …) and tests the pasted key
+  against the provider before saving it, so a rejected key is reported as
+  rejected instead of surfacing ten minutes later as a failed NPC reply.
+
+### Changed — no more relay
+
+- **The Python/PowerShell voice relay is gone.** Fish Audio runs entirely inside
+  the game: the client searches and validates the key, and the server synthesises
+  each spoken line and streams the mp3 to nearby players, so nobody needs a
+  second program, a `.bat` file, or their own key to *hear* an NPC.
+- Built-in Google/SAPI4 voices stay keyless, and `relay:<id>` voice ids from 2.x
+  are normalised to `fish:<id>` so saved characters keep working.
+
+### New — the NPC actually knows what is going on
+
+- **Situation report** replaces the old single system prompt: health, burning,
+  current activity, weapon in hand, nearby players with distance/direction/health
+  and whether they are aiming at the NPC, nearby creatures with hostility, a
+  timestamped event log (being shot, kills, gunfire, deaths) and a multi-speaker
+  transcript.
+- **Per-player memory and affinity** — NPCs remember facts about players and how
+  they feel about them, and the relationship is shown back to the model.
+- **LLM actions**: `follow`, `stay`, `come`, `wander`, `attack`, `stop_attacking`,
+  `flee`, `switch_weapon`, `drop_weapon`, `use`, `gesture`. Actions are declared in
+  the reply JSON and executed on the NPC's own AI.
+- **Mouth movement and facial expressions.** Speech drives the same flexes as
+  `GM:MouthMoveAnimation` (`jaw_drop`, `left_part`, `right_part`, …) in time with
+  the audio channel's level, and the model's chosen emotion drives the face.
+- **Native HL2 voice lines are suppressed** on AI NPCs so a Citizen's stock
+  dialogue no longer talks over the AI.
+
+### Changed — chat and pickers
+
+- **Text now appears when the voice starts.** Replies are held client-side until
+  the audio channel for that NPC is actually playing (or ~4s if the voice host is
+  down), instead of the text racing ahead of the speech.
+- **One body browser** replaces the duplicate list + "browse bodies" pair: a
+  searchable, paged icon grid over NPC bodies *and* playermodels, with a live 3D
+  preview. Body choice is stored per character and applied after spawn.
+- **Voice picker rebuilt** around search: the default view is Fish Audio's most
+  used voices (not a hardcoded pin list), duplicate uploads of the same character
+  collapse into one row, rows carry a free pre-rendered **▶ Play** sample,
+  language filter and paging, and ★ pins float to the top of the first page.
+- **Chat window keeps history** per NPC (including lines sent with `/say` or
+  proximity chat), and gained Follow / Stay / Calm / Clear chat / Edit NPC
+  buttons plus a live in-game character editor.
+- Weapon selection added to the Create wizard (Behaviour step).
+
+### Fixed
+
+- **NPCs were named after their spawn class.** The display name is now a single
+  source of truth (`AINPCS.NPCName`), kept on the networked var *and* `SetName()`,
+  with no fallback to the NPC class.
+- **The player's own line appeared twice** in the chat window: the local append and
+  the server echo both landed. Echoes are now matched against what this client
+  sent.
+- **Modal backgrounds were invisible** over Mantle's translucent windows — an
+  alpha-252 `draw.RoundedBox` composited to nothing. Frame fills are opaque
+  `surface.DrawRect` now.
+- **The body list could be permanently small**: the catalogue was cached on first
+  build and `util.IsValidModel` rejects addon models that are not mounted yet.
+- Model parameters are re-learned per provider/model on a 400 (temperature,
+  `max_tokens` vs `max_completion_tokens`, reasoning), with one automatic retry.
+
 ## [4.0.0] — Mantle interface
 
 The C menu is now built on [Mantle](https://github.com/darkfated/mantle), a UI and

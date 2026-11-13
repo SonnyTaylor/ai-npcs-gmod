@@ -4,6 +4,7 @@ provider.id       = "openai"
 provider.label    = "OpenAI"
 provider.getKeyUrl = "https://platform.openai.com/api-keys"
 provider.note     = "Paid. Blocked in some regions (Russia, China, etc)."
+provider.defaultModel = "gpt-5-mini"
 
 provider.modelOrder = {
     "gpt-5",
@@ -54,16 +55,18 @@ provider.models["o4-mini"].label     = "o4-mini (reasoning)"
 
 if SERVER then
     function provider.request(npc, callback)
+        local q = npc._quirks or {}
+        local tokField = q.tokens_field or "max_completion_tokens"
         local body = {
             model = npc.model,
-            messages = npc.history,
-            max_completion_tokens = npc.max_tokens,
+            messages = npc.messages or npc.history,
+            [tokField] = npc.max_tokens,
         }
-        if npc.reasoning and npc.reasoning ~= "" then
+        if npc.reasoning and npc.reasoning ~= "" and not q.no_reasoning then
             -- OpenAI has no true "off"; minimal is the fastest it will go.
             body.reasoning_effort = (npc.reasoning == "none") and "minimal" or npc.reasoning
         end
-        if npc.temperature ~= nil then
+        if npc.temperature ~= nil and not q.no_temp then
             body.temperature = npc.temperature
         end
 
